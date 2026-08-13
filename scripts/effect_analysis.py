@@ -77,11 +77,12 @@ def clean(desc, bb):
     return re.sub(r'<[^>]*>', '', d)
 
 
-def extract_support(cur, char_id, name, profession):
+def extract_support(cur, char_id, name, profession, caster_atk=None):
     """返回 (effects dict, 说明字符串)"""
     fx = {'fragile': 0.0, 'def_shred_pct': 0.0, 'def_shred_flat': 0.0,
           'slow': 0.0, 'control_dur': 0.0, 'ally_atk_pct': 0.0,
-          'ally_as': 0.0, 'enemy_atk': 0.0, 'stun': 0.0, 'bind': 0.0,
+          'ally_as': 0.0, 'enemy_atk': 0.0, 'inspire_pct': 0.0,
+          'inspire_atk': caster_atk or 0.0, 'stun': 0.0, 'bind': 0.0,
           'frozen': 0.0, 'sleep': 0.0, 'palsy': 0.0, 'float': 0.0, 'talent': 0.0}
     notes = []
     rows = cur.execute(
@@ -126,18 +127,17 @@ def extract_support(cur, char_id, name, profession):
                 fx['slow'] = max(fx['slow'], float(m.group(1)) / 100.0)
                 notes.append(f'减速{m.group(1)}%')
         # 友方增益（精确句式）：
-        # 1) 鼓舞：友方单位获得…X攻击力的鼓舞
+        # 1) 鼓舞：友方单位获得…相当于施法者X%攻击力的鼓舞（平值加成 = 施法者ATK×X%）
         if '鼓舞' in desc and ('获得' in desc or '友方单位' in desc):
             v = (A.bb_dict(bb) if bb else {}).get('atk')
             if isinstance(v, (int, float)) and 0 < v <= 5:
-                fx['ally_atk_pct'] = max(fx['ally_atk_pct'], v)
-                notes.append(f'鼓舞攻击+{v*100:.0f}%')
+                fx['inspire_pct'] = max(fx['inspire_pct'], v)
+                notes.append(f'鼓舞(施法者攻击力+{v*100:.0f}%)')
             else:
                 m = re.search(r'鼓舞.{0,8}?(\d+(?:\.\d+)?)%', desc)
                 if m:
-                    v = float(m.group(1)) / 100.0
-                    fx['ally_atk_pct'] = max(fx['ally_atk_pct'], v)
-                    notes.append(f'鼓舞攻击+{m.group(1)}%')
+                    fx['inspire_pct'] = max(fx['inspire_pct'], float(m.group(1)) / 100.0)
+                    notes.append(f'鼓舞(施法者攻击力+{m.group(1)}%)')
         # 2) 直接：我方单位…攻击力+X%（同句且无标点隔断，紧邻处无"自身"）
         m = re.search(r'我方单位[^，。]{0,12}攻击力[^，。]{0,6}?[+提升增加提高][^，。]{0,4}?(\d+(?:\.\d+)?)%', desc)
         if m and '自身' not in desc[max(0, desc.find('攻击力') - 8):desc.find('攻击力')]:
@@ -237,7 +237,7 @@ def main():
             continue
         stats, mod, _ = fs
         stats['_char_id'] = ch['char_id']
-        fx, notes = extract_support(cur, ch['char_id'], ch['name'], ch['profession'])
+        fx, notes = extract_support(cur, ch['char_id'], ch['name'], ch['profession'], stats['atk'])
         rs = range_size(cur, ch['char_id'])
         sv = survival_score(cur, stats)
         common = {
@@ -253,11 +253,13 @@ def main():
             'def_shred_flat': fx['def_shred_flat'], 'slow': fx['slow'],
             'ally_atk_pct': fx['ally_atk_pct'], 'ally_as': fx['ally_as'],
             'enemy_atk': fx['enemy_atk'],
+            'inspire_pct': fx['inspire_pct'], 'inspire_atk': round(fx['inspire_atk'], 1),
             'control_dur': round(fx['control_dur'], 1),
             'support_score': round(fx['fragile'] * 100 + fx['def_shred_pct'] * 60
                                    + fx['slow'] * 40 + fx['ally_atk_pct'] * 50
                                    + fx['ally_as'] * 0.5 + fx['control_dur']
-                                   + fx['enemy_atk'] * 40, 1),
+                                   + fx['enemy_atk'] * 40
+                                   + fx['inspire_pct'] * fx['inspire_atk'] * 0.08, 1),
             'effects': notes,
         })
         surv_rows.append({
@@ -273,6 +275,7 @@ def main():
         cols = ['char_name', 'profession', 'sub_profession', 'rarity', 'atk', 'max_hp',
                 'def', 'magic_resistance', 'range_size', 'fragile', 'def_shred_pct',
                 'def_shred_flat', 'slow', 'ally_atk_pct', 'ally_as', 'control_dur',
+                'inspire_pct', 'inspire_atk',
                 'support_score', 'effects']
         w = csv.DictWriter(f, fieldnames=cols, extrasaction='ignore')
         w.writeheader()

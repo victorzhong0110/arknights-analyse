@@ -1,52 +1,80 @@
 # 明日方舟角色强度数据测评 — 分析输出说明
 
-生成时间：全量数据导入（含模组阶段数值）后由 `scripts/evaluate_operators.py` 产出。
+生成：全量数据导入（含模组阶段数值）后，由 `scripts/` 下测评管线产出。
+
+## 计算口径（统一）
+
+**精二满级 + 0潜能 + 专三(M3) + 满信赖200% + 最佳模组3阶段**
+（`AK_POT=1` 可切换满潜；潜能影响天赋候选选择，0潜取 `required_potential_rank=0` 候选）
+
+## 公式（经社区/攻略资料核实）
+
+| 机制 | 公式 | 来源 |
+|---|---|---|
+| 物理伤害 | `攻击力×倍率 − 防御力`，**保底 = 攻击力×倍率×5%** | [攻防公式设计探讨](https://github.com/zafara-zd/blog/issues/101) |
+| 法术伤害 | `攻击力×倍率 × (100−法抗)/100`（无法抗保底，100抗=0） | 同上 |
+| 真实伤害 | 无视防御/法抗 | 同上 |
+| 无视防御 | `有效防御 = max(防御 − 固定穿透 − 防御×百分比穿透, 0)` | 干员技能 `def_penetrate_fixed/pct` |
+| 攻击间隔 | `(基础攻击间隔 + 修正) × 100/(100+攻速加成)` | 攻速与攻击间隔互换算 |
+| 元素爆条 | 阈值 **1000**；神经损伤爆条=1000真伤+眩晕，侵蚀=800物伤+永久-100防，灼燃=800法伤；爆条状态约10秒 | [元素损伤机制](https://www.51pgzs.com/gonglue/12136.html)、社区整理 |
+| 属性叠加 | `(基础+信赖+潜能平值+模组平值+天赋平值) × (1+百分比加成)` | 标准满练度叠加 |
 
 ## 输出文件
 
 | 文件 | 内容 |
 |---|---|
-| `operator_eval.csv` | **长表**：每干员 × 每技能(M3) × 每敌人基准场景，含有效伤害/技能DPS/循环DPS |
-| `operator_summary.csv` | **摘要**：每干员 × 每技能（仅 base 场景 0防0抗）+ 面板构成 |
-| `operator_stats.csv` | **面板**：每干员最终属性（E2满级+信赖200%+满潜+最佳模组3阶段） |
-| `enemy_benchmark.csv` | 敌人 DEF/法抗 百分位基准（全敌/NORMAL/ELITE/BOSS） |
+| `operator_eval.csv` | 干员×技能×场景 长表（含有效爆发/技能DPS/循环DPS/元素爆条字段） |
+| `operator_summary.csv` | 每干员×技能 base 场景摘要 |
+| `operator_stats.csv` | 416 名干员最终面板（E2满级+信赖+0潜+模组） |
+| `enemy_benchmark.csv` | 敌人 DEF/法抗 百分位（全敌/NORMAL/ELITE/BOSS，level=0） |
+| `support_ranking.csv` | **辅助效果排行**：脆弱/减防/减速/友方增益(鼓舞/直接)/控制 × 范围 |
+| `survival_ranking.csv` | **生存能力**：基准ATK=2000下的承受命中数 + 免疫/隐匿/无敌/复活特质 |
+| `interval_phys.csv` / `_winners.csv` | **物抗 0-8000**（敌人表实际范围）每100点全类型持续DPS网格 + 区间归属 |
+| `interval_arts.csv` / `_winners.csv` | 法抗 0-100 持续输出区间 |
+| `interval_element.csv` / `_winners.csv` | 元素抗性 0-100 区间 |
+| `interval_phys_burst.csv` 等 | 单发爆发技能区间（无循环/持续时间的技能） |
+| `interval_execute.csv` | 处决类（敌人当前生命值%伤害，如赤刃明霄陈·赤霄天喟）按HP基准 |
+| `combo_ranking.csv` | **2-4人组合**：输出+1..3辅助的组合持续DPS（日常DEF300/合约DEF1200） |
+| `tier_contract.csv` | **合约榜**：0.35循环@BOSS基准 +0.25爆发 +0.2生存 +0.2辅助 |
+| `tier_daily.csv` | **日常榜**：0.45循环@P50 +0.25爆发 +0.1生存 +0.1辅助 +0.1挂机 |
+| `tier_afk.csv` | **挂机榜**：仅自动(技能type 0/2)技能，0.6循环@P50 +0.2生存 +0.1辅助 +0.1爆发 |
 
-## 计算口径
+## 关键机制建模说明
 
-### 面板（operator_stats.csv）
-- **基础**：E2 满级（phase=2 最高等级）属性
-- **信赖**：favor level 50（200% 信赖）加成
-- **潜能**：potentials 的 attributeModifiers 全部叠加（平值相加，百分比相乘）
-- **模组**：该干员所有非初始模组中 3 阶段 ATK 最高者，应用其 attributeBlackboard 属性加成
-- **天赋**：每个天赋取 E2 解锁的最高候选（满潜），模组若加强该天赋则用模组升级版；
-  天赋 `atk`/`max_hp`/`def` 百分比与 `attack_speed` 等平值加成计入面板
-- 公式：`最终 = (基础 + 信赖 + 潜能平值 + 模组平值 + 天赋平值) × (1 + 潜能% + 天赋%)`
+1. **弹药型技能**：`attack@*trigger_time` 弹药数，每次消耗读 `消耗N发`/`ammo_cost`；
+   按基础攻击间隔计算实际开火时间并计入循环（不再"瞬间打完"）
+2. **充能型技能**：`可充能N次` → 循环 = `N×spCost − initSp`（嵯峨·除恶 等）
+3. **弹跳链**：`attack@chain.atk_scale` 主击打主目标，链击弹跳至其他敌人；**单目标口径只算主击**，
+   满链总伤记录在 `aoe_total_raw`
+4. **元素爆条**：`ep_damage_ratio`(神经)/`burn.atk_scale`(灼燃) 积累 → 爆条时间 `1000/元素DPS`；
+   爆条触发伤害按循环均摊；爆条期间额外元素伤害(`element_atk_scale`/`extra_ep_damage_scale`)按占空比计入
+5. **处决/比例伤害**：赤霄·天喟 = `max(敌人当前生命值×6%, 攻击力×5.8)`；刻俄柏"剥壳"= 每击额外
+   `目标防御力×40%` 法术伤害（0潜E2）
+6. **部署回复型（快活）**：周期按**再部署时间**计算（非8秒技能持续）
+7. **鼓舞 vs 直接增益**：鼓舞 = `施法者攻击力×X%` 的平值加成（如浊心斯卡蒂110%×自身攻击）；
+   直接增益 = 目标攻击力×X%（如华法琳+90%）
 
-### 技能伤害（operator_eval.csv / operator_summary.csv）
-- 技能等级：专精三（M3, level_index=9）
-- 单次命中 = 最终ATK × 倍率；倍率 = `atk_scale` 类键（含 `attack@atk_scale` 等变体）× `atk` 攻击力加成
-- 连击数：`attack@times` / `max_hit_num` 类键 / 描述"N次伤害"
-- 攻击次数：
-  - 持续型：`floor(持续时间 / 攻击间隔)`；间隔 = `(基础攻击间隔 + base_attack_time修正) × 100/(100+攻速加成)`
-  - **弹药型**（`attack@*trigger_time`，如 假日风暴/开火成瘾症/永恒狩猎）：弹药数 ÷ 每次消耗（描述"消耗N发"）
-  - 单发型：1 次（或 `cnt`）
-- 伤害类型：描述关键词（物理/法术/真实）+ 职业兜底
-- 有效伤害：
-  - 物理：`max(命中 - 防御, 命中 × 5%)`（5% 保底）
-  - 法术：`命中 × (1 - 法抗/100)`
-  - 真实：无视防御
-- 技能DPS = 有效总伤 / 持续时间（弹药型按 攻击次数×间隔 折算）
-- 循环DPS = 有效总伤 / (SP需求 - 初始SP + 持续时间)，仅自动回复技能
+## 已知限制（诚实标注）
 
-### 敌人基准（enemy_benchmark.csv）
-来自 `enemy_stats_manual`（PRTS 全量，level=0 常规难度）：
-- 全敌：DEF P25/50/75/90 = 120/300/650/1100，法抗 P25/50/75/90 = 5/20/50/60
-- BOSS：DEF P75 = 1200，法抗 P75 = 60
-- eval 场景：物理技能 → DEF 0/300/650/1100/1200；法术技能 → 法抗 0/20/50/60/70；真伤 → 仅 0
+1. **纸面理论值**：不含攻速溢出、前摇、索敌、嘲讽、SP初动竞速等实战因素
+2. **合约 tag 数值不在数据集中**：`crisis_v2_runes` 黑板的 `valueStr` 指向客户端二级查找表，
+   公开 JSON 无数值；敌人物抗实际范围已用 `enemy_stats_manual` 实测（0~8000，42 个敌人 >2000），
+   合约倍率未叠加
+3. **个别技能近似**：复合倍率技能（蕾缪安S3/维什戴尔S3多段）、`min/max_atk_scale` 浮动类、
+   `trigger_time` 语义歧义（望·天下劫）按主倍率近似
+4. **辅助效果为文本解析**：句式匹配（脆弱/减速/控制）可能漏报或误报，权重为启发式
+5. **多目标技能** 按单目标计算，`aoe_total_raw`/`max_target` 供参考
+6. **未建模**：召唤物体系、蓄力机制、技能专精材料成本、基建/模组养成投入
+7. 元素爆条状态时长（10s）与爆条伤害数值（神经1000真伤等）为社区近似值，非官方文档
 
-## 已知限制
-1. **纸面理论值**：不含攻速溢出、攻击前摇、技能开启延迟、嘲讽/索敌等实战因素
-2. 模组特性效果（如破甲、无视防御、特殊机制）只记录描述，不进入数值计算
-3. 弹药型技能中多段/复合倍率（如 蕾缪安S3、维什戴尔S3）取主倍率近似
-4. 多目标技能 `max_target` 仅记录，伤害按单目标计算
-5. 辅助/控制类技能（无攻击倍率）不计入伤害排名
+## 使用方法
+
+```bash
+python3 scripts/build_db.py && python3 scripts/build_enemies.py      # 建库
+python3 scripts/import_module_levels.py                              # 模组数值
+python3 scripts/fetch_prts_enemies.py                                # PRTS 敌人数值（可选刷新）
+python3 scripts/evaluate_operators.py                                # 面板+技能测评
+python3 scripts/enemy_benchmark.py && python3 scripts/effect_analysis.py
+python3 scripts/interval_analysis.py && python3 scripts/combo_analysis.py
+python3 scripts/tier_lists.py
+```

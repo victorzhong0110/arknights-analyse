@@ -297,7 +297,13 @@ def compute(ch, s, bb, sp, atk, bat):
     rec['sp_type'] = sp_type
     rec['sp_cost'] = sp.get('spCost')
     rec['init_sp'] = sp.get('initSp')
-    if sp_type == 1 and sp.get('spCost'):
+    # 充能型技能（可充能N次）：循环 = 充满 N 层的时间（N×spCost - initSp）
+    if sp_type == 1 and sp.get('spCost') and sp.get('maxChargeTime') and cnt:
+        cycle_time = max(cnt * sp['spCost'] - (sp.get('initSp') or 0), 0)
+        if cycle_time > 0:
+            rec['cycle_time'] = cycle_time
+            rec['cycle_dps'] = total / cycle_time
+    elif sp_type == 1 and sp.get('spCost'):
         charge = max(sp['spCost'] - (sp.get('initSp') or 0), 0)
         cycle_time = charge + (dur if (dur and dur > 0) else 0)
         if cycle_time > 0:
