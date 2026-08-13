@@ -33,11 +33,11 @@ DB = E.DB
 OUT = E.OUT
 
 DEF_MAX = 8000      # 敌人表实际最大防御
-DEF_STEP = 50       # 细粒度扫描（优势区间精度）
+DEF_STEP = 1        # 精确到 1 点防御
 RES_MAX = 100
-RES_STEP = 5
+RES_STEP = 1
 EL_MAX = 100
-EL_STEP = 5
+EL_STEP = 1
 BENCH_DEFS = (0, 150, 300, 650, 1100, 2000, 4000, 8000)  # 基准防御点
 
 HP_BENCH = (30000, 100000, 500000)  # 赤霄·天喟 处决基准：精英/BOSS/超BOSS 生命
