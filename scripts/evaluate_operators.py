@@ -104,8 +104,13 @@ def merge_stat(a, b):
     return a
 
 
+# 计算口径：精二满级 + 信赖200% + 最佳模组3阶段 + 潜能(默认0潜)
+USE_POT = os.environ.get('AK_POT', '0') == '1'   # AK_POT=1 时启用满潜
+
+
 def best_talent_candidates(cur, char_id, module_talent_upgrades):
-    """每个天赋取最佳候选（E2 + 满潜）；模组加强优先。返回 {talent_index: stat}"""
+    """每个天赋取最佳候选（E2 解锁；0潜时仅 required_potential_rank=0）。
+    模组加强优先。返回 {talent_index: stat}"""
     result = {}
     rows = cur.execute(
         "SELECT talent_index, unlock_phase, required_potential_rank, blackboard "
@@ -116,15 +121,20 @@ def best_talent_candidates(cur, char_id, module_talent_upgrades):
         by_talent.setdefault(t_index, []).append((phase, pot_rank, bb))
     for t_index, cands in by_talent.items():
         cands.sort(key=lambda x: (x[0], x[1]))  # unlock_phase 优先, 其次潜能
+        if not USE_POT:
+            cands = [c for c in cands if c[1] == 0]  # 0潜：仅基础候选
         _, _, bb = cands[-1]
         result[t_index] = talent_stat(bb_dict(jload(bb)))
 
-    # 模组天赋升级覆盖
+    # 模组天赋升级覆盖（0潜取 rank=0 候选）
     for tu in module_talent_upgrades or []:
         t_index = tu.get('talent_index')
         if t_index is None:
             continue
-        bb = bb_dict(tu.get('blackboard') or [])
+        cand = tu
+        if not USE_POT and tu.get('required_potential_rank') not in (0, None):
+            continue
+        bb = bb_dict(cand.get('blackboard') or [])
         result[t_index] = talent_stat(bb)
     return result
 
@@ -172,7 +182,8 @@ def final_stats(cur, char_id):
     t_max_hp, t_atk, t_def, t_res = trust
 
     pots = aggregate_potentials(
-        cur.execute("SELECT blackboard FROM potentials WHERE char_id=?", (char_id,)).fetchall())
+        cur.execute("SELECT blackboard FROM potentials WHERE char_id=?", (char_id,)).fetchall()) \
+        if USE_POT else {}
 
     mod = pick_module(cur, char_id)
     mod_stats = mod[2] if mod else {}
@@ -327,6 +338,7 @@ def main():
                     'elemental_total': int(rec['elemental_total']) if rec.get('elemental_total') else None,
                     'elemental_dps': round(rec['elemental_dps'], 1) if rec.get('elemental_dps') else None,
                     'time_to_burst': round(rec['time_to_burst'], 2) if rec.get('time_to_burst') else None,
+                    'burst_trigger_dps': round(rec['burst_trigger_dps'], 1) if rec.get('burst_trigger_dps') else None,
                     'burst_extra_dps': round(rec['burst_extra_dps'], 1) if rec.get('burst_extra_dps') else None,
                     'burst_dps': round(rec['burst_dps'], 1) if rec.get('burst_dps') else None,
                     'sp_type': rec['sp_type'], 'sp_cost': rec['sp_cost'], 'init_sp': rec['init_sp'],

@@ -38,9 +38,13 @@ TARGET_RES = float(os.environ.get('AK_RES', '0'))   # 目标法术抗性
 MULT_KEYS = ('attack@atk_scale', 'atk_scale', 'damage_scale', 'attack@damage_scale')
 COMBO_HINTS = ('连射', '连击', '{times}次', '{times}连', '发射{times}枚', '{attack@times}连', '{attack@times}次')
 
-# 元素损伤（爆条）模型参数：标准阈值 1000 元素损伤值；爆条状态持续约 10 秒
+# 元素损伤（爆条）模型参数（基于社区/攻略整理的近似值，见 data/analysis/README.md）：
+#   标准阈值 1000；爆条状态约 10 秒
+#   神经损伤爆条：1000 点真实伤害；灼燃：800 点法术伤害；侵蚀：800 物理 + 永久-100防
 BURST_THRESHOLD = 1000.0
 BURST_STATE_DUR = 10.0
+BURST_TRIGGER = {'neural': (1000.0, 'true'), 'burn': (800.0, 'arts'),
+                 'erosion': (800.0, 'physical'), 'withered': (0.0, 'none')}
 
 # 职业默认伤害类型：无法从描述判断时的兜底
 PROF_DEFAULT_TYPE = {
@@ -196,7 +200,7 @@ def compute(ch, s, bb, sp, atk, bat):
         if tk:
             ammo = int(bb[tk])
             m = re.search(r'消耗(\d+)发', desc)
-            ammo_per_attack = int(m.group(1)) if m else 1
+            ammo_per_attack = int(m.group(1)) if m else int(bb.get('ammo_cost') or 1)
             attack_count = max(int(ammo / ammo_per_attack), 1)
             # 实际持续时间 ≈ 攻击次数 × 攻击间隔（供技能DPS/循环DPS使用）
             if attack_speed:
@@ -204,8 +208,8 @@ def compute(ch, s, bb, sp, atk, bat):
                 interval = base_int * 100.0 / (100.0 + attack_speed)
             elif bat_mod is not None:
                 interval = bat + bat_mod
-            elif is_attack_type:
-                interval = bat
+            else:
+                interval = bat  # 弹药型默认按基础攻击间隔开火
             if interval and interval > 0:
                 dur = attack_count * interval
                 rec['duration'] = dur
@@ -223,11 +227,17 @@ def compute(ch, s, bb, sp, atk, bat):
     per_attack = per_hit * hit_times
     total = per_attack * attack_count
 
-    # 有效伤害（考虑目标防御/法抗）
+    # 无视防御/法穿（def_penetrate_fixed / def_penetrate / magic_resist_penetrate_fixed）
+    pen_fixed = bb.get('def_penetrate_fixed') or bb.get('attack@def_penetrate_fixed') or 0
+    pen_pct = bb.get('def_penetrate') or 0
+    res_pen = bb.get('magic_resist_penetrate_fixed') or 0
+
+    # 有效伤害（考虑目标防御/法抗/无视防御）
     if dmg_type == 'physical':
-        eff_hit = max(per_hit - TARGET_DEF, per_hit * 0.05)  # 物理保底 5%
+        eff_def = max(TARGET_DEF - pen_fixed - TARGET_DEF * pen_pct, 0)
+        eff_hit = max(per_hit - eff_def, per_hit * 0.05)  # 物理保底 5%
     elif dmg_type == 'arts':
-        eff_hit = per_hit * max(1 - TARGET_RES / 100, 0)     # 法术抗性
+        eff_hit = per_hit * max(1 - max(TARGET_RES - res_pen, 0) / 100, 0)  # 法术抗性
     elif dmg_type == 'true':
         eff_hit = per_hit                                    # 真伤无视防御
     else:
@@ -244,25 +254,41 @@ def compute(ch, s, bb, sp, atk, bat):
     elif rec['max_target'] and rec['max_target'] > 1:
         rec['aoe_total_damage'] = total * rec['max_target']
 
-    # 元素损伤（爆条）模型
-    ep_ratio = bb.get('attack@ep_damage_ratio') or bb.get('ep_damage_ratio')
-    el_scale = bb.get('attack@element_atk_scale') or bb.get('element_atk_scale')
-    if ep_ratio:
+    # 元素损伤（爆条）模型：积累源 = ep_damage_ratio(神经) / burn.atk_scale(灼燃) / element_atk_scale
+    ep_ratio = (bb.get('attack@ep_damage_ratio') or bb.get('ep_damage_ratio')
+                or bb.get('attack@extra_ep_damage_scale') or bb.get('element_atk_scale')
+                or bb.get('attack@burn.atk_scale') or bb.get('burn.atk_scale'))
+    el_scale = (bb.get('attack@element_atk_scale') or bb.get('element_atk_scale')
+                or bb.get('element_damage_scale') or bb.get('element_multiplier')
+                or bb.get('attack@extra_ep_damage_scale') or bb.get('extra_ep_damage_scale'))
+    if ep_ratio or el_scale:
+        ep_ratio = ep_ratio or 0
         hits_total = attack_count * hit_times
         if has_chain:
             hits_total += attack_count * chain_times
         active = dur if (dur and dur > 0) else (attack_count * interval if interval else None)
-        rec['elemental_total'] = atk * ep_ratio * hits_total
+        elem_total = atk * ep_ratio * hits_total
+        rec['elemental_total'] = elem_total
         if active and active > 0:
-            elemental_dps = atk * ep_ratio * hits_total / active
+            elemental_dps = elem_total / active
             rec['elemental_dps'] = elemental_dps
             t_burst = BURST_THRESHOLD / elemental_dps if elemental_dps > 0 else None
             rec['time_to_burst'] = t_burst
-            if el_scale and t_burst:
-                extra_dps = atk * el_scale * hits_total / active  # 爆条期间每秒额外元素伤害
-                cycle_extra = extra_dps * BURST_STATE_DUR / (t_burst + BURST_STATE_DUR)
-                rec['burst_extra_dps'] = cycle_extra
-                rec['burst_dps'] = elemental_dps + cycle_extra
+            if t_burst:
+                # 爆条触发伤害（神经1000真伤 / 灼燃800法伤 / 侵蚀800物伤）按循环均摊
+                trig_dmg, trig_type = BURST_TRIGGER.get('neural' if ep_ratio and not (
+                    bb.get('burn.atk_scale') or bb.get('attack@burn.atk_scale'))
+                    else 'burn', (0.0, 'none'))
+                cycle = t_burst + BURST_STATE_DUR
+                if trig_dmg > 0:
+                    rec['burst_trigger_dps'] = trig_dmg / cycle
+                # 爆条状态期间每秒额外元素/损伤伤害
+                extra_hits = hits_total / active
+                extra_dps = atk * (el_scale or 0) * extra_hits
+                if extra_dps > 0:
+                    rec['burst_extra_dps'] = extra_dps * BURST_STATE_DUR / cycle
+                rec['burst_dps'] = elemental_dps + (rec.get('burst_trigger_dps') or 0) \
+                    + (rec.get('burst_extra_dps') or 0)
 
     if dur and dur > 0:
         rec['active_dps'] = total / dur
