@@ -26,6 +26,7 @@ import csv
 import json
 import math
 import os
+import re
 import sqlite3
 
 DB = os.path.normpath(os.path.join(os.path.dirname(__file__), '..', 'db', 'arknights.db'))
@@ -49,7 +50,8 @@ def detect_damage_type(desc, profession):
     """从技能描述识别伤害类型: physical / arts / true / mixed / none"""
     has_phys = '物理伤害' in desc or '物理溅射伤害' in desc
     has_arts = '法术伤害' in desc or '法术溅射伤害' in desc
-    has_true = '真实伤害' in desc
+    has_true = ('真实伤害' in desc or '造成真实' in desc
+                or re.search(r'伤害类型[^。\n]{0,14}真实', desc) is not None)
     if has_true and (has_phys or has_arts):
         return 'mixed'
     if has_true:
@@ -77,6 +79,19 @@ def get_num(d, *keys):
     return None
 
 
+def find_key(d, pattern, prefer=None):
+    """按正则找第一个数值键；prefer 精确键优先。"""
+    if prefer and prefer in d and isinstance(d[prefer], (int, float)):
+        return prefer
+    for k in sorted(d):
+        if pattern.search(k) and isinstance(d[k], (int, float)):
+            return k
+    return None
+
+
+CN_NUM = {'两': 2, '三': 3, '四': 4, '五': 5, '六': 6, '七': 7, '八': 8, '九': 9, '十': 10}
+
+
 def compute(ch, s, bb, sp, atk, bat):
     desc = s['description'] or ''
     rec = {
@@ -86,23 +101,39 @@ def compute(ch, s, bb, sp, atk, bat):
         'computed': 'yes', 'reason': '',
     }
 
-    # 攻击倍率
-    mult = get_num(bb, *MULT_KEYS)
+    # 攻击倍率：atk 攻击力加成 与 atk_scale 键 相乘（如 爆裂黎明 +180% × 2.2）
     atk_buff = bb.get('atk')
-    if mult is None and atk_buff is not None and 0 < atk_buff <= 5:
-        mult = 1 + atk_buff
+    buff_mult = 1 + atk_buff if (atk_buff is not None and 0 < atk_buff <= 5) else 1.0
+    mult = get_num(bb, *MULT_KEYS)
+    if mult is None:
+        k = find_key(bb, re.compile(r'atk_scale|damage_scale'))
+        if k:
+            mult = bb[k]
+    if mult is not None:
+        mult = mult * buff_mult
+    elif buff_mult != 1.0:
+        mult = buff_mult
     rec['mult'] = mult
 
     # 伤害类型
     dmg_type = detect_damage_type(desc, ch['profession'])
     rec['damage_type'] = dmg_type
 
-    # 连击数
+    # 连击数（每次攻击命中次数）
     hit_times = 1
     if 'attack@times' in bb and bb['attack@times']:
         hit_times = bb['attack@times']
     elif 'times' in bb and bb['times'] and any(w in desc for w in COMBO_HINTS):
         hit_times = bb['times']
+    else:
+        k = find_key(bb, re.compile(r'max_hit_num|hit_num'))
+        if k:
+            hit_times = bb[k]
+        else:
+            m = re.search(r'([两三四五六七八九十\d]+)次伤害', desc)
+            if m:
+                t = m.group(1)
+                hit_times = CN_NUM.get(t, int(t) if t.isdigit() else 1)
     rec['hit_times'] = hit_times
 
     # 目标数
@@ -127,7 +158,11 @@ def compute(ch, s, bb, sp, atk, bat):
 
     if dur is not None and dur > 0:
         if attack_speed:
-            interval = bat * 100.0 / (100.0 + attack_speed)
+            # 攻速加成与 base_attack_time 修正叠加：interval = (bat + bat_mod) * 100/(100+as)
+            base_int = (bat + bat_mod) if bat_mod is not None else bat
+            interval = base_int * 100.0 / (100.0 + attack_speed)
+            if interval <= 0:
+                interval = 0.1
         elif bat_mod is not None:
             interval = bat + bat_mod
             if interval <= 0:
@@ -138,7 +173,26 @@ def compute(ch, s, bb, sp, atk, bat):
             interval = interval_bb
         attack_count = math.floor(dur / interval) if interval else 1
     else:
-        attack_count = int(cnt) if cnt else 1
+        # 弹药型技能：attack@*trigger_time = 弹药数（攻击次数）
+        tk = find_key(bb, re.compile(r'trigger_time'), prefer='attack@trigger_time')
+        if tk:
+            ammo = int(bb[tk])
+            m = re.search(r'消耗(\d+)发', desc)
+            ammo_per_attack = int(m.group(1)) if m else 1
+            attack_count = max(int(ammo / ammo_per_attack), 1)
+            # 实际持续时间 ≈ 攻击次数 × 攻击间隔（供技能DPS/循环DPS使用）
+            if attack_speed:
+                base_int = (bat + bat_mod) if bat_mod is not None else bat
+                interval = base_int * 100.0 / (100.0 + attack_speed)
+            elif bat_mod is not None:
+                interval = bat + bat_mod
+            elif is_attack_type:
+                interval = bat
+            if interval and interval > 0:
+                dur = attack_count * interval
+                rec['duration'] = dur
+        else:
+            attack_count = int(cnt) if cnt else 1
     rec['interval'] = interval
     rec['attack_count'] = attack_count
 
@@ -180,6 +234,7 @@ def compute(ch, s, bb, sp, atk, bat):
         charge = max(sp['spCost'] - (sp.get('initSp') or 0), 0)
         cycle_time = charge + (dur if (dur and dur > 0) else 0)
         if cycle_time > 0:
+            rec['cycle_time'] = cycle_time
             rec['cycle_dps'] = total / cycle_time
     return rec
 
