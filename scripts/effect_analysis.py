@@ -77,83 +77,113 @@ def clean(desc, bb):
     return re.sub(r'<[^>]*>', '', d)
 
 
-def extract_support(cur, char_id, name, profession, caster_atk=None):
-    """返回 (effects dict, 说明字符串)"""
+def extract_support(cur, char_id, name, profession, caster_atk=None, stats=None):
+    """返回 (effects dict, 说明字符串)；各效果按技能覆盖率(uptime)加权，同类取最高。"""
     fx = {'fragile': 0.0, 'def_shred_pct': 0.0, 'def_shred_flat': 0.0,
           'slow': 0.0, 'control_dur': 0.0, 'ally_atk_pct': 0.0,
           'ally_as': 0.0, 'enemy_atk': 0.0, 'inspire_pct': 0.0,
           'inspire_atk': caster_atk or 0.0, 'stun': 0.0, 'bind': 0.0,
           'frozen': 0.0, 'sleep': 0.0, 'palsy': 0.0, 'float': 0.0, 'talent': 0.0}
     notes = []
+    respawn = (cur.execute(
+        "SELECT respawn_time FROM operator_levels WHERE char_id=? AND phase=2 "
+        "ORDER BY level DESC LIMIT 1", (char_id,)).fetchone() or (None,))[0] or 70.0
+    atk = (stats or {}).get('atk', 1000.0)
+    bat = (stats or {}).get('base_attack_time', 1.0)
+
     rows = cur.execute(
-        "SELECT name, description, blackboard FROM skill_levels "
+        "SELECT name, description, blackboard, duration, sp_data FROM skill_levels "
         "WHERE skill_id IN (SELECT skill_id FROM operator_skills WHERE char_id=?) "
         "AND level_index=9", (char_id,)).fetchall()
     trows = cur.execute(
         "SELECT name, description FROM talents WHERE char_id=?", (char_id,)).fetchall()
 
-    for name_, desc, bb in rows + [(t[0], t[1], None) for t in trows]:
-        desc = clean(desc or '', A.bb_dict(bb) if bb else {})
+    def skill_uptime(desc, bb, dur_field, sp_data):
+        """技能效果覆盖率 = 有效持续 / 循环（部署型按再部署时间）。"""
+        try:
+            sp = json.loads(sp_data) if sp_data else {}
+        except Exception:
+            sp = {}
+        bb = A.bb_dict(bb) if bb else {}
+        s = {'name': name, 'skill_index': 0, 'description': desc, 'duration': dur_field,
+             'sp_data': sp_data, 'blackboard': json.dumps(bb) if bb else None}
+        try:
+            rec = A.compute({'name': name, 'profession': profession}, s, bb, sp, atk, bat)
+        except Exception:
+            rec = {}
+        dur = rec.get('duration') or 0
+        if rec.get('cycle_time') and rec['cycle_time'] > 0:
+            return min(dur / rec['cycle_time'], 1.0) if dur > 0 else 1.0
+        if rec.get('sp_type') == 8 and respawn:
+            return min(max(dur, 1.0) / max(respawn, 1.0), 1.0)
+        return 1.0
+
+    for row in rows + [(t[0], t[1], None, None, None) for t in trows]:
+        name_, desc, bb_raw, dur_field, sp_data = row
+        bb = A.bb_dict(bb_raw) if bb_raw else {}
+        is_talent = sp_data is None and bb_raw is None
+        uptime = 1.0 if is_talent else skill_uptime(desc, bb_raw, dur_field, sp_data)
+        desc = clean(desc or '', bb)
         if '脆弱' in desc:
             m = re.search(r'受到.{0,2}伤害(?:提升|增加|提高)[^。]*?(\d+(?:\.\d+)?)%', desc)
             if m:
-                fx['fragile'] = max(fx['fragile'], float(m.group(1)) / 100.0)
-                notes.append(f'脆弱+{m.group(1)}%')
+                v = float(m.group(1)) / 100.0 * uptime
+                fx['fragile'] = max(fx['fragile'], v)
+                notes.append(f'脆弱+{m.group(1)}%(覆盖{uptime:.0%})')
             else:
                 m = re.search(r'(\d+(?:\.\d+)?)%[^。]{0,8}脆弱|脆弱[^。]{0,8}?(\d+(?:\.\d+)?)%', desc)
                 if m:
-                    v = float(m.group(1) or m.group(2)) / 100.0
+                    v = float(m.group(1) or m.group(2)) / 100.0 * uptime
                     fx['fragile'] = max(fx['fragile'], v)
-                    notes.append(f'脆弱+{v*100:.0f}%')
+                    notes.append(f'脆弱+{v/uptime*100:.0f}%(覆盖{uptime:.0%})')
         if '防御力下降' in desc:
             m = re.search(r'防御(?:力)?下降[^。]*?(\d+(?:\.\d+)?)%', desc)
             if m and ('敌人' in desc or '目标' in desc or '敌方' in desc):
-                fx['def_shred_pct'] = max(fx['def_shred_pct'], float(m.group(1)) / 100.0)
-                notes.append(f'减防{m.group(1)}%')
+                fx['def_shred_pct'] = max(fx['def_shred_pct'], float(m.group(1)) / 100.0 * uptime)
+                notes.append(f'减防{m.group(1)}%(覆盖{uptime:.0%})')
         for kw, key in (('晕眩', 'stun'), ('眩晕', 'stun'), ('停顿', 'bind'),
                         ('冻结', 'frozen'), ('沉睡', 'sleep'), ('麻痹', 'palsy'),
                         ('浮空', 'float')):
-            if kw in desc:
+            if kw in desc and f'免疫{kw}' not in desc and f'{kw}免疫' not in desc \
+                    and f'{kw}失效' not in desc:
                 m = re.search(rf'{kw}[^。]*?(\d+(?:\.\d+)?)秒', desc)
                 if m:
-                    dur = float(m.group(1))
+                    dur = float(m.group(1)) * uptime
                     if dur > fx[key]:
                         fx['control_dur'] += (dur - fx[key]) * 0.5
                         fx[key] = dur
-                        notes.append(f'{kw}{m.group(1)}s')
+                        notes.append(f'{kw}{m.group(1)}s(覆盖{uptime:.0%})')
         if ('移动速度' in desc and ('下降' in desc or '降低' in desc)) or '减速' in desc:
             m = re.search(r'移动速度[^。]*?(\d+(?:\.\d+)?)%', desc)
             if m:
-                fx['slow'] = max(fx['slow'], float(m.group(1)) / 100.0)
-                notes.append(f'减速{m.group(1)}%')
+                fx['slow'] = max(fx['slow'], float(m.group(1)) / 100.0 * uptime)
+                notes.append(f'减速{m.group(1)}%(覆盖{uptime:.0%})')
         # 友方增益（精确句式）：
-        # 1) 鼓舞：友方单位获得…相当于施法者X%攻击力的鼓舞（平值加成 = 施法者ATK×X%）
         if '鼓舞' in desc and ('获得' in desc or '友方单位' in desc):
-            v = (A.bb_dict(bb) if bb else {}).get('atk')
+            v = bb.get('atk')
             if isinstance(v, (int, float)) and 0 < v <= 5:
-                fx['inspire_pct'] = max(fx['inspire_pct'], v)
-                notes.append(f'鼓舞(施法者攻击力+{v*100:.0f}%)')
+                fx['inspire_pct'] = max(fx['inspire_pct'], v * uptime)
+                notes.append(f'鼓舞(施法者攻击力+{v*100:.0f}%,覆盖{uptime:.0%})')
             else:
                 m = re.search(r'鼓舞.{0,8}?(\d+(?:\.\d+)?)%', desc)
                 if m:
-                    fx['inspire_pct'] = max(fx['inspire_pct'], float(m.group(1)) / 100.0)
-                    notes.append(f'鼓舞(施法者攻击力+{m.group(1)}%)')
-        # 2) 直接：我方单位…攻击力+X%（同句且无标点隔断，紧邻处无"自身"）
+                    fx['inspire_pct'] = max(fx['inspire_pct'], float(m.group(1)) / 100.0 * uptime)
+                    notes.append(f'鼓舞(施法者攻击力+{m.group(1)}%,覆盖{uptime:.0%})')
         m = re.search(r'我方单位[^，。]{0,12}攻击力[^，。]{0,6}?[+提升增加提高][^，。]{0,4}?(\d+(?:\.\d+)?)%', desc)
         if m and '自身' not in desc[max(0, desc.find('攻击力') - 8):desc.find('攻击力')]:
-            v = float(m.group(1)) / 100.0
+            v = float(m.group(1)) / 100.0 * uptime
             fx['ally_atk_pct'] = max(fx['ally_atk_pct'], v)
-            notes.append(f'友方攻击+{m.group(1)}%')
+            notes.append(f'友方攻击+{m.group(1)}%(覆盖{uptime:.0%})')
         m = re.search(r'我方单位[^，。]{0,12}攻击速度[^，。]{0,6}?[+提升增加提高][^，。]{0,4}?(\d+)', desc)
         if m:
-            fx['ally_as'] = max(fx['ally_as'], float(m.group(1)))
-            notes.append(f'友方攻速+{m.group(1)}')
-    # 黑板直接数值（减防/减速/减攻）——"敌人…防御力-" 句式 或 attack@ 前缀，排除自身减益
-    for name_, desc, bb in rows:
-        if not bb:
+            fx['ally_as'] = max(fx['ally_as'], float(m.group(1)) * uptime)
+            notes.append(f'友方攻速+{m.group(1)}(覆盖{uptime:.0%})')
+    # 黑板直接数值（减防/减速/减攻）
+    for name_, desc, bb_raw, dur_field, sp_data in rows:
+        if not bb_raw:
             continue
         desc = desc or ''
-        for kv in json.loads(bb):
+        for kv in json.loads(bb_raw):
             k, v = kv.get('key'), kv.get('value')
             if not isinstance(v, (int, float)):
                 continue
@@ -237,7 +267,7 @@ def main():
             continue
         stats, mod, _ = fs
         stats['_char_id'] = ch['char_id']
-        fx, notes = extract_support(cur, ch['char_id'], ch['name'], ch['profession'], stats['atk'])
+        fx, notes = extract_support(cur, ch['char_id'], ch['name'], ch['profession'], stats['atk'], stats)
         rs = range_size(cur, ch['char_id'])
         sv = survival_score(cur, stats)
         common = {

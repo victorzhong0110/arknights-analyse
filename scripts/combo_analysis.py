@@ -142,7 +142,7 @@ def main():
                 dmg_m = 1 + s1['fragile'] + s2['fragile']
                 shp = s1['def_shred_pct'] + s2['def_shred_pct']
                 shf = s1['def_shred_flat'] + s2['def_shred_flat']
-                inspire = s1['inspire_pct'] * s1['inspire_atk'] + s2['inspire_pct'] * s2['inspire_atk']
+                inspire = max(s1['inspire_pct'] * s1['inspire_atk'], s2['inspire_pct'] * s2['inspire_atk'])
                 for def_, res in ((300, 20), (1200, 60)):
                     v = dps_sustained(dps, def_, res, atk_m, dmg_m, shp, shf, inspire)
                     results.append({'size': 3, 'dps': dps['char'], 'skill': dps['skill'],
@@ -161,7 +161,7 @@ def main():
                     dmg_m = 1 + s1['fragile'] + s2['fragile'] + s3['fragile']
                     shp = s1['def_shred_pct'] + s2['def_shred_pct'] + s3['def_shred_pct']
                     shf = s1['def_shred_flat'] + s2['def_shred_flat'] + s3['def_shred_flat']
-                    inspire = sum(x['inspire_pct'] * x['inspire_atk'] for x in (s1, s2, s3))
+                    inspire = max(x['inspire_pct'] * x['inspire_atk'] for x in (s1, s2, s3))
                     for def_, res in ((300, 20), (1200, 60)):
                         v = dps_sustained(dps, def_, res, atk_m, dmg_m, shp, shf, inspire)
                         results.append({'size': 4, 'dps': dps['char'], 'skill': dps['skill'],

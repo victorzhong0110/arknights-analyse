@@ -38,17 +38,17 @@ TARGET_RES = float(os.environ.get('AK_RES', '0'))   # 目标法术抗性
 MULT_KEYS = ('attack@atk_scale', 'atk_scale', 'damage_scale', 'attack@damage_scale')
 COMBO_HINTS = ('连射', '连击', '{times}次', '{times}连', '发射{times}枚', '{attack@times}连', '{attack@times}次')
 
-# 元素损伤（爆条）模型参数（依据 gamedata_const.json 官方定义）：
-#   爆条阈值：普通/精英敌人 1000，领袖(BOSS) 2000；爆条后 10 秒冷却
-#   神经损伤·我方：6000 点元素伤害 + 3 层麻痹（麻痹=打断普攻/无法攻击，上限3层）
-#   灼燃：10秒内法抗-20 并受 1200 点法术伤害；侵蚀：永久-100防 并受 800 物理伤害
-#   凋亡：15秒无法开技能，每秒失1技力并受100法术伤害（共1500）；狂躁：攻速+50但自伤
+# 元素损伤（爆条）模型参数（依据 gamedata_const.json 官方"·我方"定义——我方干员对敌人施加的爆发效果）：
+#   爆条阈值：普通/精英敌人 1000，领袖(BOSS) 2000；爆条触发均为"元素伤害"（受元素抗性影响）
+#   神经·我方：6000 元素伤害 + 3 层麻痹（打断普攻/无法攻击），10 秒冷却
+#   灼燃·我方：7000 元素伤害 + 期间法抗-20，10 秒冷却
+#   侵蚀·我方：5000 元素伤害 + 永久-120 防（可叠加），8 秒冷却
+#   凋亡·我方：50% 虚弱（逐渐恢复）+ 每秒 800 元素伤害持续 15 秒（共 12000），15 秒冷却
 BURST_THRESHOLD = 1000.0
 BURST_THRESHOLD_BOSS = 2000.0
-BURST_COOLDOWN = 10.0
-BURST_TRIGGER = {'neural': (6000.0, 'element'), 'burn': (1200.0, 'arts'),
-                 'erosion': (800.0, 'physical'), 'withered': (1500.0, 'arts'),
-                 'rampage': (0.0, 'none')}
+BURST_TRIGGER = {'neural': 6000.0, 'burn': 7000.0, 'erosion': 5000.0,
+                 'withered': 12000.0, 'rampage': 0.0}
+BURST_COOLDOWN = {'neural': 10.0, 'burn': 10.0, 'erosion': 8.0, 'withered': 15.0, 'rampage': 15.0}
 
 
 def detect_element_type(desc):
@@ -210,6 +210,9 @@ def compute(ch, s, bb, sp, atk, bat):
             interval = bat
         elif interval_bb and interval_bb > 0 and any(w in desc for w in ('攻击间隔', '每秒', '持续造成', '不断')):
             interval = interval_bb
+        if interval is None and mult is not None and '停止攻击' not in desc \
+                and '立即' not in desc and '下次攻击' not in desc and '部署后' not in desc:
+            interval = bat  # 持续型攻击技能（无间隔修饰）按基础攻击间隔
         attack_count = math.floor(dur / interval) if interval else 1
     else:
         # 弹药型技能：attack@*trigger_time = 弹药数（攻击次数）
@@ -298,16 +301,17 @@ def compute(ch, s, bb, sp, atk, bat):
             rec['time_to_burst_boss'] = (BURST_THRESHOLD_BOSS / elemental_dps
                                          if elemental_dps > 0 else None)
             if t_burst:
-                # 爆条触发伤害（神经6000元素伤害等）按爆条周期均摊；周期 = 积累 + 10秒冷却
-                trig_dmg, trig_type = BURST_TRIGGER.get(elem_type, (0.0, 'none'))
-                cycle = t_burst + BURST_COOLDOWN
+                # 爆条触发伤害（元素伤害，按各类型冷却均摊）
+                trig_dmg = BURST_TRIGGER.get(elem_type, 0.0)
+                cd = BURST_COOLDOWN.get(elem_type, 10.0)
+                cycle = t_burst + cd
                 if trig_dmg > 0:
                     rec['burst_trigger_dps'] = trig_dmg / cycle
                 # 爆条状态期间每秒额外元素/损伤伤害（真言类：对爆条目标附加元素伤害）
                 extra_hits = hits_total / active
                 extra_dps = atk * (el_scale or 0) * extra_hits
                 if extra_dps > 0:
-                    rec['burst_extra_dps'] = extra_dps * BURST_COOLDOWN / cycle
+                    rec['burst_extra_dps'] = extra_dps * cd / cycle
                 rec['burst_dps'] = elemental_dps + (rec.get('burst_trigger_dps') or 0) \
                     + (rec.get('burst_extra_dps') or 0)
 
@@ -319,7 +323,7 @@ def compute(ch, s, bb, sp, atk, bat):
     rec['sp_cost'] = sp.get('spCost')
     rec['init_sp'] = sp.get('initSp')
     # 充能型技能（可充能N次）：循环 = 充满 N 层的时间（N×spCost - initSp）
-    if sp_type == 1 and sp.get('spCost') and sp.get('maxChargeTime') and cnt:
+    if sp_type == 1 and sp.get('spCost') and sp.get('maxChargeTime') and cnt and '可充能' in desc:
         cycle_time = max(cnt * sp['spCost'] - (sp.get('initSp') or 0), 0)
         if cycle_time > 0:
             rec['cycle_time'] = cycle_time

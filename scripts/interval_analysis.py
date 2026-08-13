@@ -33,11 +33,12 @@ DB = E.DB
 OUT = E.OUT
 
 DEF_MAX = 8000      # 敌人表实际最大防御
-DEF_STEP = 100
+DEF_STEP = 50       # 细粒度扫描（优势区间精度）
 RES_MAX = 100
 RES_STEP = 5
 EL_MAX = 100
 EL_STEP = 5
+BENCH_DEFS = (0, 150, 300, 650, 1100, 2000, 4000, 8000)  # 基准防御点
 
 HP_BENCH = (30000, 100000, 500000)  # 赤霄·天喟 处决基准：精英/BOSS/超BOSS 生命
 
@@ -270,6 +271,30 @@ def main():
         print('\n== 处决类（当前生命值%伤害）==')
         for r in exec_rows:
             print(f"  {r['char']}「{r['skill']}」 对HP {r['enemy_hp']:>7,} → {r['damage']:>10,}")
+
+    # 逐干员 DPS 基准剖面 + 优势区间（全伤害类型，物理按防御扫描）
+    profiles = []
+    for sk in all_sus:
+        row = {'char': sk['char'], 'skill': sk['skill'], 'dmg_type': sk['dmg_type'],
+               'profession': sk['profession'], 'rarity': sk['rarity']}
+        for d in BENCH_DEFS:
+            row[f'dps@{d}'] = round(sustained(sk, d, 20, 0))  # 法抗固定20
+        # 该技能在防御扫描中的最优区间
+        best_def, best_dps = 0, None
+        for d in range(0, DEF_MAX + 1, DEF_STEP):
+            v = sustained(sk, d, 20, 0)
+            if best_dps is None or v > best_dps:
+                best_dps, best_def = v, d
+        row['peak_dps'] = round(best_dps)
+        row['peak_def'] = best_def
+        profiles.append(row)
+    with open(os.path.join(OUT, 'interval_operator_summary.csv'), 'w', newline='', encoding='utf-8-sig') as f:
+        cols = ['char', 'skill', 'dmg_type', 'profession', 'rarity'] \
+            + [f'dps@{d}' for d in BENCH_DEFS] + ['peak_dps', 'peak_def']
+        w = csv.DictWriter(f, fieldnames=cols, extrasaction='ignore')
+        w.writeheader()
+        w.writerows(profiles)
+    print(f'\n逐干员优势区间剖面 → interval_operator_summary.csv ({len(profiles)} 技能)')
     conn.close()
 
 
