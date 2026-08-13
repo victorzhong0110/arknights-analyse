@@ -322,6 +322,13 @@ def main():
                     'heal_dps': round(rec['total_damage'] / rec['duration'], 1) if (is_heal and rec['duration']) else None,
                     'heal_cycle_dps': round(rec['total_damage'] / rec['cycle_time'], 1)
                     if (is_heal and rec.get('cycle_time')) else None,
+                    'chain_times': rec.get('chain_times'),
+                    'aoe_total_raw': int(rec['aoe_total_damage']) if rec.get('aoe_total_damage') else None,
+                    'elemental_total': int(rec['elemental_total']) if rec.get('elemental_total') else None,
+                    'elemental_dps': round(rec['elemental_dps'], 1) if rec.get('elemental_dps') else None,
+                    'time_to_burst': round(rec['time_to_burst'], 2) if rec.get('time_to_burst') else None,
+                    'burst_extra_dps': round(rec['burst_extra_dps'], 1) if rec.get('burst_extra_dps') else None,
+                    'burst_dps': round(rec['burst_dps'], 1) if rec.get('burst_dps') else None,
                     'sp_type': rec['sp_type'], 'sp_cost': rec['sp_cost'], 'init_sp': rec['init_sp'],
                     'module_used': mod_name,
                 }

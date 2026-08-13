@@ -38,6 +38,10 @@ TARGET_RES = float(os.environ.get('AK_RES', '0'))   # 目标法术抗性
 MULT_KEYS = ('attack@atk_scale', 'atk_scale', 'damage_scale', 'attack@damage_scale')
 COMBO_HINTS = ('连射', '连击', '{times}次', '{times}连', '发射{times}枚', '{attack@times}连', '{attack@times}次')
 
+# 元素损伤（爆条）模型参数：标准阈值 1000 元素损伤值；爆条状态持续约 10 秒
+BURST_THRESHOLD = 1000.0
+BURST_STATE_DUR = 10.0
+
 # 职业默认伤害类型：无法从描述判断时的兜底
 PROF_DEFAULT_TYPE = {
     'PIONEER': 'physical', 'WARRIOR': 'physical', 'SNIPER': 'physical',
@@ -106,9 +110,15 @@ def compute(ch, s, bb, sp, atk, bat):
     buff_mult = 1 + atk_buff if (atk_buff is not None and 0 < atk_buff <= 5) else 1.0
     mult = get_num(bb, *MULT_KEYS)
     if mult is None:
-        k = find_key(bb, re.compile(r'atk_scale|damage_scale'))
-        if k:
-            mult = bb[k]
+        # 变体倍率：仅取 attack@ 前缀、且非辅助倍率键（attack@s3_atk_scale / attack@atk_scale_3）
+        AUX = ('min_', 'max_', 'splash_', 'extra_', 'proj_', 'chain.', 'bounce_',
+               'main_', 'fin_', 'ex_', 'base_', 'element_', 'ep_', 'burn_',
+               'cannon_', 'append_')
+        for k in sorted(bb):
+            if (k.startswith('attack@') and ('atk_scale' in k or 'damage_scale' in k)
+                    and not any(a in k for a in AUX) and isinstance(bb[k], (int, float))):
+                mult = bb[k]
+                break
     if mult is not None:
         mult = mult * buff_mult
     elif buff_mult != 1.0:
@@ -134,6 +144,14 @@ def compute(ch, s, bb, sp, atk, bat):
             if m:
                 t = m.group(1)
                 hit_times = CN_NUM.get(t, int(t) if t.isdigit() else 1)
+    # 弹跳链（attack@chain.atk_scale + chain_times）：主击打主目标，链击弹跳至其他敌人
+    chain_scale = bb.get('attack@chain.atk_scale')
+    chain_times = int(bb.get('chain_times') or 0)
+    has_chain = chain_scale is not None and chain_times > 0
+    if has_chain:
+        rec['chain_times'] = chain_times
+        rec['chain_scale'] = chain_scale
+        hit_times = 1  # 有链时 attack@times 是总命中数（主1+链N），主目标命中视为 1
     rec['hit_times'] = hit_times
 
     # 目标数
@@ -220,8 +238,31 @@ def compute(ch, s, bb, sp, atk, bat):
     rec['per_hit'] = per_hit
     rec['per_attack'] = per_attack
     rec['total_damage'] = total
-    if rec['max_target'] and rec['max_target'] > 1:
+    if has_chain:
+        # 链击总伤（弹跳至其他目标）
+        rec['aoe_total_damage'] = total + atk * chain_scale * chain_times * attack_count
+    elif rec['max_target'] and rec['max_target'] > 1:
         rec['aoe_total_damage'] = total * rec['max_target']
+
+    # 元素损伤（爆条）模型
+    ep_ratio = bb.get('attack@ep_damage_ratio') or bb.get('ep_damage_ratio')
+    el_scale = bb.get('attack@element_atk_scale') or bb.get('element_atk_scale')
+    if ep_ratio:
+        hits_total = attack_count * hit_times
+        if has_chain:
+            hits_total += attack_count * chain_times
+        active = dur if (dur and dur > 0) else (attack_count * interval if interval else None)
+        rec['elemental_total'] = atk * ep_ratio * hits_total
+        if active and active > 0:
+            elemental_dps = atk * ep_ratio * hits_total / active
+            rec['elemental_dps'] = elemental_dps
+            t_burst = BURST_THRESHOLD / elemental_dps if elemental_dps > 0 else None
+            rec['time_to_burst'] = t_burst
+            if el_scale and t_burst:
+                extra_dps = atk * el_scale * hits_total / active  # 爆条期间每秒额外元素伤害
+                cycle_extra = extra_dps * BURST_STATE_DUR / (t_burst + BURST_STATE_DUR)
+                rec['burst_extra_dps'] = cycle_extra
+                rec['burst_dps'] = elemental_dps + cycle_extra
 
     if dur and dur > 0:
         rec['active_dps'] = total / dur
