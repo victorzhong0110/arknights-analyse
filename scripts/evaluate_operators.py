@@ -366,9 +366,9 @@ def main():
 
     # 排名概览：按职业 × 循环DPS（base 场景）
     if not ONLY:
-        prof_cn = {'SNIPER': '狙击', 'CASTER': '术师', 'GUARD': '近卫', 'SPECIAL': '特种',
-                   'VANGUARD': '先锋', 'SUPPORT': '辅助', 'DEFENDER': '重装', 'MEDIC': '医疗'}
-        for prof in ('SNIPER', 'CASTER', 'GUARD', 'SPECIAL', 'VANGUARD', 'SUPPORT', 'DEFENDER', 'MEDIC'):
+        prof_cn = {'SNIPER': '狙击', 'CASTER': '术师', 'WARRIOR': '近卫', 'SPECIAL': '特种',
+                   'PIONEER': '先锋', 'SUPPORT': '辅助', 'TANK': '重装', 'MEDIC': '医疗'}
+        for prof in ('SNIPER', 'CASTER', 'WARRIOR', 'SPECIAL', 'PIONEER', 'SUPPORT', 'TANK', 'MEDIC'):
             if prof == 'MEDIC':
                 pool = [r for r in sum_rows if r['rarity'] == 5 and r['heal_dps']]
                 top = sorted(pool, key=lambda x: -(x['heal_dps'] or 0))[:8]
