@@ -38,13 +38,30 @@ TARGET_RES = float(os.environ.get('AK_RES', '0'))   # 目标法术抗性
 MULT_KEYS = ('attack@atk_scale', 'atk_scale', 'damage_scale', 'attack@damage_scale')
 COMBO_HINTS = ('连射', '连击', '{times}次', '{times}连', '发射{times}枚', '{attack@times}连', '{attack@times}次')
 
-# 元素损伤（爆条）模型参数（基于社区/攻略整理的近似值，见 data/analysis/README.md）：
-#   标准阈值 1000；爆条状态约 10 秒
-#   神经损伤爆条：1000 点真实伤害；灼燃：800 点法术伤害；侵蚀：800 物理 + 永久-100防
+# 元素损伤（爆条）模型参数（依据 gamedata_const.json 官方定义）：
+#   爆条阈值：普通/精英敌人 1000，领袖(BOSS) 2000；爆条后 10 秒冷却
+#   神经损伤·我方：6000 点元素伤害 + 3 层麻痹（麻痹=打断普攻/无法攻击，上限3层）
+#   灼燃：10秒内法抗-20 并受 1200 点法术伤害；侵蚀：永久-100防 并受 800 物理伤害
+#   凋亡：15秒无法开技能，每秒失1技力并受100法术伤害（共1500）；狂躁：攻速+50但自伤
 BURST_THRESHOLD = 1000.0
-BURST_STATE_DUR = 10.0
-BURST_TRIGGER = {'neural': (1000.0, 'true'), 'burn': (800.0, 'arts'),
-                 'erosion': (800.0, 'physical'), 'withered': (0.0, 'none')}
+BURST_THRESHOLD_BOSS = 2000.0
+BURST_COOLDOWN = 10.0
+BURST_TRIGGER = {'neural': (6000.0, 'element'), 'burn': (1200.0, 'arts'),
+                 'erosion': (800.0, 'physical'), 'withered': (1500.0, 'arts'),
+                 'rampage': (0.0, 'none')}
+
+
+def detect_element_type(desc):
+    """从描述识别元素损伤类型（神经/灼燃/侵蚀/凋亡/狂躁）。"""
+    if '灼燃损伤' in desc or '灼燃' in desc:
+        return 'burn'
+    if '侵蚀损伤' in desc:
+        return 'erosion'
+    if '凋亡损伤' in desc:
+        return 'withered'
+    if '狂躁损伤' in desc:
+        return 'rampage'
+    return 'neural'  # 神经损伤 / 默认
 
 # 职业默认伤害类型：无法从描述判断时的兜底
 PROF_DEFAULT_TYPE = {
@@ -257,36 +274,40 @@ def compute(ch, s, bb, sp, atk, bat):
     # 元素损伤（爆条）模型：积累源 = ep_damage_ratio(神经) / burn.atk_scale(灼燃) / element_atk_scale
     ep_ratio = (bb.get('attack@ep_damage_ratio') or bb.get('ep_damage_ratio')
                 or bb.get('attack@extra_ep_damage_scale') or bb.get('element_atk_scale')
+                or bb.get('element_damage_scale')
                 or bb.get('attack@burn.atk_scale') or bb.get('burn.atk_scale'))
     el_scale = (bb.get('attack@element_atk_scale') or bb.get('element_atk_scale')
                 or bb.get('element_damage_scale') or bb.get('element_multiplier')
                 or bb.get('attack@extra_ep_damage_scale') or bb.get('extra_ep_damage_scale'))
     if ep_ratio or el_scale:
         ep_ratio = ep_ratio or 0
+        elem_type = detect_element_type(desc)
         hits_total = attack_count * hit_times
         if has_chain:
             hits_total += attack_count * chain_times
         active = dur if (dur and dur > 0) else (attack_count * interval if interval else None)
         elem_total = atk * ep_ratio * hits_total
         rec['elemental_total'] = elem_total
+        rec['element_type'] = elem_type
         if active and active > 0:
             elemental_dps = elem_total / active
             rec['elemental_dps'] = elemental_dps
             t_burst = BURST_THRESHOLD / elemental_dps if elemental_dps > 0 else None
             rec['time_to_burst'] = t_burst
+            # BOSS（领袖）阈值 2000 → 爆条时间翻倍
+            rec['time_to_burst_boss'] = (BURST_THRESHOLD_BOSS / elemental_dps
+                                         if elemental_dps > 0 else None)
             if t_burst:
-                # 爆条触发伤害（神经1000真伤 / 灼燃800法伤 / 侵蚀800物伤）按循环均摊
-                trig_dmg, trig_type = BURST_TRIGGER.get('neural' if ep_ratio and not (
-                    bb.get('burn.atk_scale') or bb.get('attack@burn.atk_scale'))
-                    else 'burn', (0.0, 'none'))
-                cycle = t_burst + BURST_STATE_DUR
+                # 爆条触发伤害（神经6000元素伤害等）按爆条周期均摊；周期 = 积累 + 10秒冷却
+                trig_dmg, trig_type = BURST_TRIGGER.get(elem_type, (0.0, 'none'))
+                cycle = t_burst + BURST_COOLDOWN
                 if trig_dmg > 0:
                     rec['burst_trigger_dps'] = trig_dmg / cycle
-                # 爆条状态期间每秒额外元素/损伤伤害
+                # 爆条状态期间每秒额外元素/损伤伤害（真言类：对爆条目标附加元素伤害）
                 extra_hits = hits_total / active
                 extra_dps = atk * (el_scale or 0) * extra_hits
                 if extra_dps > 0:
-                    rec['burst_extra_dps'] = extra_dps * BURST_STATE_DUR / cycle
+                    rec['burst_extra_dps'] = extra_dps * BURST_COOLDOWN / cycle
                 rec['burst_dps'] = elemental_dps + (rec.get('burst_trigger_dps') or 0) \
                     + (rec.get('burst_extra_dps') or 0)
 
