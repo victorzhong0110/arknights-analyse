@@ -55,16 +55,20 @@ def range_size(cur, char_id):
         return None
 
 
-PLACEHOLDER_RE = re.compile(r'\{(\w+):([^}]*)\}')
+PLACEHOLDER_RE = re.compile(r'\{(-?[\w@.\-]+):([^}]*)\}')
 
 
 def fill(text, bb):
-    """把 {key:fmt} 占位符代入黑板真实值（百分比转百分号形式）。"""
+    """把 {key:fmt} 占位符代入黑板真实值（支持负号键 {-atk:0%}，百分比转百分号形式）。"""
     def rep(m):
         k, fmt = m.group(1), m.group(2)
-        v = (bb or {}).get(k)
+        neg = k.startswith('-')
+        key = k.lstrip('-')
+        v = (bb or {}).get(key)
         if v is None:
             return fmt
+        if neg:
+            v = -v
         if '%' in fmt:
             return f'{v * 100:g}%'
         return f'{v:g}'
@@ -79,10 +83,11 @@ def clean(desc, bb):
 
 def extract_support(cur, char_id, name, profession, caster_atk=None, stats=None):
     """返回 (effects dict, 说明字符串)；各效果按技能覆盖率(uptime)加权，同类取最高。"""
-    fx = {'fragile': 0.0, 'def_shred_pct': 0.0, 'def_shred_flat': 0.0,
+    fx = {'fragile': 0.0, 'magic_fragile': 0.0, 'def_shred_pct': 0.0, 'def_shred_flat': 0.0,
           'res_shred': 0.0, 'slow': 0.0, 'control_dur': 0.0, 'ally_atk_pct': 0.0,
           'ally_as': 0.0, 'enemy_atk': 0.0, 'inspire_pct': 0.0,
-          'inspire_atk': caster_atk or 0.0, 'stun': 0.0, 'bind': 0.0,
+          'inspire_atk': caster_atk or 0.0, 'sp_recovery': 0.0, 'cost_recovery': 0.0,
+          'stun': 0.0, 'bind': 0.0,
           'frozen': 0.0, 'sleep': 0.0, 'palsy': 0.0, 'float': 0.0, 'talent': 0.0}
     notes = []
     respawn = (cur.execute(
@@ -141,6 +146,12 @@ def extract_support(cur, char_id, name, profession, caster_atk=None, stats=None)
             if m and ('敌人' in desc or '目标' in desc or '敌方' in desc):
                 fx['def_shred_pct'] = max(fx['def_shred_pct'], float(m.group(1)) / 100.0 * uptime)
                 notes.append(f'减防{m.group(1)}%(覆盖{uptime:.0%})')
+        # 法术脆弱（如塞雷娅 S3"受到的法术伤害+55%"）
+        if '法术伤害' in desc and '受到' in desc and ('+' in desc or '提升' in desc or '增加' in desc):
+            m = re.search(r'受到的法术伤害.{0,4}[+提升增加提高].{0,4}?(\d+(?:\.\d+)?)%', desc)
+            if m:
+                fx['magic_fragile'] = max(fx['magic_fragile'], float(m.group(1)) / 100.0 * uptime)
+                notes.append(f'法术脆弱+{m.group(1)}%(覆盖{uptime:.0%})')
         if '法术抗性' in desc and ('下降' in desc or '降低' in desc or '减少' in desc):
             m = re.search(r'法术抗性[^。]{0,6}(?:下降|降低|减少)[^。]{0,4}?(\d+(?:\.\d+)?)', desc)
             if m and ('敌人' in desc or '目标' in desc or '敌方' in desc):
@@ -183,25 +194,44 @@ def extract_support(cur, char_id, name, profession, caster_atk=None, stats=None)
         if m:
             fx['ally_as'] = max(fx['ally_as'], float(m.group(1)) * uptime)
             notes.append(f'友方攻速+{m.group(1)}(覆盖{uptime:.0%})')
-    # 黑板直接数值（减防/减速/减攻）
+        # 技力回复（友方/全场光环，非自身）：sp_recovery_per_sec 或"回复X点技力"
+        if ('技力' in desc and ('回复' in desc or '恢复' in desc)) or 'sp恢复速度' in desc:
+            if '友方' in desc or '干员' in desc or '全场' in desc or '所有' in desc:
+                m = re.search(r'技力.{0,4}(?:回复|恢复)速度.{0,4}?[+提升增加].{0,4}?(\d+(?:\.\d+)?)', desc)
+                if m:
+                    fx['sp_recovery'] = max(fx['sp_recovery'], float(m.group(1)) * uptime)
+                    notes.append(f'友方技力回复+{m.group(1)}/秒(覆盖{uptime:.0%})')
+        # 回费（先锋部署费用回复）
+        if '部署费用' in desc and ('获得' in desc or '回复' in desc):
+            m = re.search(r'获得.{0,6}?(\d+(?:\.\d+)?)点部署费用|回复.{0,6}?(\d+(?:\.\d+)?)点部署费用', desc)
+            if m:
+                v = float(m.group(1) or m.group(2))
+                fx['cost_recovery'] = max(fx['cost_recovery'], v)
+                notes.append(f'回费{v:.0f}点')
+    # 黑板直接数值（减防/减速/减攻）——用 cleaned 描述（剥标签+占位符代入）
     for name_, desc, bb_raw, dur_field, sp_data in rows:
         if not bb_raw:
             continue
-        desc = desc or ''
-        for kv in json.loads(bb_raw):
+        bb_kv = json.loads(bb_raw)
+        desc_c = clean(desc or '', {kv['key']: kv.get('value') for kv in bb_kv})
+        for kv in bb_kv:
             k, v = kv.get('key'), kv.get('value')
             if not isinstance(v, (int, float)):
                 continue
-            enemy_debuff = re.search(r'敌人[^。]{0,18}防御(?:力)?\s*[-−]', desc) is not None
-            if k == 'def' and v < 0 and (k.startswith('attack@') or enemy_debuff):
+            enemy_debuff = re.search(r'敌人[^。]{0,18}防御(?:力)?\s*[-−]', desc_c) is not None
+            if 'def' == k and v < 0 and (k.startswith('attack@') or enemy_debuff):
                 if abs(v) < 1:
                     fx['def_shred_pct'] = max(fx['def_shred_pct'], abs(v))
                 else:
                     fx['def_shred_flat'] = max(fx['def_shred_flat'], abs(v))
-            if k == 'atk' and v < 0 and re.search(r'敌人[^。]{0,18}攻击(?:力)?\s*[-−]', desc):
+                notes.append(f'敌方减防{abs(v)*100:.0f}%')
+            if k == 'atk' and v < 0 and re.search(r'敌人[^。]{0,25}攻击(?:力)?[^。]{0,12}[-−]', desc_c):
                 fx['enemy_atk'] = max(fx['enemy_atk'], abs(v))
-            if k == 'move_speed' and v < 0:
+                notes.append(f'敌方减攻{abs(v)*100:.0f}%')
+            if 'move_speed' in k and v < 0:
                 fx['slow'] = max(fx['slow'], abs(v))
+                if k == 'move_speed':
+                    notes.append(f'减速{abs(v)*100:.0f}%')
     return fx, '; '.join(notes)
 
 
@@ -289,12 +319,16 @@ def main():
             'ally_atk_pct': fx['ally_atk_pct'], 'ally_as': fx['ally_as'],
             'enemy_atk': fx['enemy_atk'],
             'inspire_pct': fx['inspire_pct'], 'inspire_atk': round(fx['inspire_atk'], 1),
+            'magic_fragile': fx['magic_fragile'], 'sp_recovery': fx['sp_recovery'],
+            'cost_recovery': fx['cost_recovery'],
             'control_dur': round(fx['control_dur'], 1),
-            'support_score': round(fx['fragile'] * 100 + fx['def_shred_pct'] * 60
+            'support_score': round(fx['fragile'] * 100 + fx['magic_fragile'] * 40
+                                   + fx['def_shred_pct'] * 60
                                    + fx['slow'] * 40 + fx['ally_atk_pct'] * 50
                                    + fx['ally_as'] * 0.5 + fx['control_dur']
                                    + fx['enemy_atk'] * 40
-                                   + fx['inspire_pct'] * fx['inspire_atk'] * 0.08, 1),
+                                   + fx['inspire_pct'] * fx['inspire_atk'] * 0.08
+                                   + fx['sp_recovery'] * 30 + fx['cost_recovery'] * 5, 1),
             'effects': notes,
         })
         surv_rows.append({
@@ -308,9 +342,10 @@ def main():
     spath = os.path.join(OUT, 'support_ranking.csv')
     with open(spath, 'w', newline='', encoding='utf-8-sig') as f:
         cols = ['char_name', 'profession', 'sub_profession', 'rarity', 'atk', 'max_hp',
-                'def', 'magic_resistance', 'range_size', 'fragile', 'def_shred_pct',
-                'def_shred_flat', 'slow', 'ally_atk_pct', 'ally_as', 'control_dur',
-                'inspire_pct', 'inspire_atk',
+                'def', 'magic_resistance', 'range_size', 'fragile', 'magic_fragile',
+                'def_shred_pct', 'def_shred_flat', 'slow', 'ally_atk_pct', 'ally_as',
+                'enemy_atk', 'control_dur', 'inspire_pct', 'inspire_atk',
+                'sp_recovery', 'cost_recovery',
                 'support_score', 'effects']
         w = csv.DictWriter(f, fieldnames=cols, extrasaction='ignore')
         w.writeheader()

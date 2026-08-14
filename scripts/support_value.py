@@ -55,12 +55,15 @@ def extract_survival(cur, char_id, stats):
     for name_, desc, bb_raw, dur_field, sp_data in rows:
         bb = __import__('analyze_skills').bb_dict(bb_raw) if bb_raw else {}
         desc = F.clean(desc or '', bb)
-        # 治疗 HPS：heal_scale / 治疗量
-        hs = bb.get('heal_scale')
-        if hs and '治疗' in desc:
-            heal_per = atk * hs
-            fx['heal_hps'] = max(fx['heal_hps'], heal_per)
-            notes.append(f'治疗{heal_per:.0f}/次')
+        # 治疗 HPS：heal_scale(每次) / attack@heal_scale(每秒) / 描述治疗量
+        hs = bb.get('heal_scale') or bb.get('attack@heal_scale')
+        if hs and ('治疗' in desc or '回复' in desc):
+            if bb.get('attack@heal_scale'):
+                fx['heal_hps'] = max(fx['heal_hps'], atk * hs)  # 每秒
+                notes.append(f'治疗{atk*hs:.0f}/秒')
+            else:
+                fx['heal_hps'] = max(fx['heal_hps'], atk * hs)  # 每次（按一次计）
+                notes.append(f'治疗{atk*hs:.0f}/次')
         # 护盾/屏障
         if '屏障' in desc or '护盾' in desc:
             m = re.search(r'(\d+(?:\.\d+)?)%[^。]{0,6}最大生命', desc) or \
@@ -111,6 +114,7 @@ def convert(fx, sv, s):
     dmg = 0.0
     # 增伤类：每百分比×整场窗口
     dmg += team_dps * fx['fragile'] * engage
+    dmg += team_dps * fx['magic_fragile'] * (1 - s['phys_frac']) * engage  # 法术脆弱仅对法术部分
     shred = fx['def_shred_flat'] + D * fx['def_shred_pct']
     if shred > 0:
         eb = max(BENCH_PHYS_DPH - D, BENCH_PHYS_DPH * 0.05)
@@ -127,13 +131,21 @@ def convert(fx, sv, s):
     if fx['ally_as']:
         dmg += team_dps * fx['ally_as'] / (100 + fx['ally_as']) * 0.8 * engage
 
-    # 时间类：额外输出窗口 × 队伍DPS，封顶在缺口内
+    # 时间类：额外输出窗口 × 队伍DPS，封顶在缺口内；多目标时减速/控制价值 ×目标数系数
+    n_eff = min(s['count'], 8) / 8
     time_g = 0.0
     if fx['slow']:
         new_pass = s['range_len'] / (s['enemy_ms'] * (1 - fx['slow']))
-        time_g += team_dps * min(deficit, new_pass - pass_time)
+        time_g += team_dps * min(deficit, new_pass - pass_time) * n_eff
     if fx['control_dur']:
-        time_g += team_dps * min(deficit, fx['control_dur']) * min(s['count'], 8) / 8
+        time_g += team_dps * min(deficit, fx['control_dur']) * n_eff
+
+    # 技力回复：循环缩短 → 循环DPS提升（平均spCost≈30，额外r/s回复）
+    if fx['sp_recovery']:
+        dmg += team_dps * fx['sp_recovery'] / (1 + fx['sp_recovery']) * engage * 0.5
+    # 回费：部署费用 → 功能价值（每点≈100伤害点当量）
+    if fx['cost_recovery']:
+        dmg += fx['cost_recovery'] * 100.0
 
     # 生存类：承伤点
     surv = 0.0
