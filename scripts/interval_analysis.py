@@ -102,6 +102,7 @@ def load_skills(cur):
                 'attack_count': rec['attack_count'],
                 'chain_times': rec.get('chain_times') or 0,
                 'chain_scale': rec.get('chain_scale'),
+                'max_target': rec.get('max_target') or 1,
                 'cycle_time': rec.get('cycle_time'), 'duration': rec.get('duration'),
                 'sp_type': rec.get('sp_type'),
                 'respawn': (cur.execute(

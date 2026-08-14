@@ -1,0 +1,32 @@
+{
+  "version": "1.0",
+  "source": "危机合约 v1 词条（跨赛季代表性值，PRTS/萌娘百科归纳，各赛季数值略有差异）",
+  "notes": "互斥组(mutex_group)内同组词条只取其一（同类取最高等级）；enemy_* 为敌方属性倍率",
+  "enemy_stat_tags": [
+    {"id": "hp_1", "name": "源石环境·活性Ⅰ", "enemy_hp_mult": 1.25, "mutex_group": "hp"},
+    {"id": "hp_2", "name": "源石环境·活性Ⅱ", "enemy_hp_mult": 1.60, "mutex_group": "hp"},
+    {"id": "hp_3", "name": "源石环境·活性Ⅲ", "enemy_hp_mult": 2.50, "mutex_group": "hp"},
+    {"id": "atk_1", "name": "源石环境·刺激Ⅰ", "enemy_atk_mult": 1.20, "mutex_group": "atk"},
+    {"id": "atk_2", "name": "源石环境·刺激Ⅱ", "enemy_atk_mult": 1.55, "mutex_group": "atk"},
+    {"id": "atk_3", "name": "源石环境·刺激Ⅲ", "enemy_atk_mult": 2.00, "mutex_group": "atk"},
+    {"id": "def_1", "name": "反装甲Ⅰ", "enemy_def_mult": 1.50, "mutex_group": "def"},
+    {"id": "def_2", "name": "反装甲Ⅱ", "enemy_def_mult": 2.00, "mutex_group": "def"},
+    {"id": "def_3", "name": "反装甲Ⅲ", "enemy_def_mult": 3.00, "mutex_group": "def"},
+    {"id": "res_fix_1", "name": "反法术Ⅰ", "enemy_res_set": 50, "mutex_group": "res"},
+    {"id": "res_fix_2", "name": "反法术Ⅱ", "enemy_res_set": 75, "mutex_group": "res"},
+    {"id": "ms_1", "name": "反机动Ⅰ", "enemy_ms_mult": 1.50, "mutex_group": "ms"},
+    {"id": "ms_2", "name": "反机动Ⅱ", "enemy_ms_mult": 2.00, "mutex_group": "ms"}
+  ],
+  "deployment_tags": [
+    {"id": "no_ranged", "name": "环境·低能见度", "ban": "远程单位", "note": "影响编队/辅助架构"},
+    {"id": "no_melee", "name": "环境·险峻地形", "ban": "近战单位", "note": "影响编队/辅助架构"},
+    {"id": "no_guard_tank", "name": "目标·战略调度", "ban": "近卫/重装"},
+    {"id": "no_caster_medic", "name": "目标·应急合约", "ban": "术师/医疗"},
+    {"id": "team_8", "name": "目标·隐秘行动Ⅰ", "team_cap": 8},
+    {"id": "team_6", "name": "目标·隐秘行动Ⅱ", "team_cap": 6},
+    {"id": "team_4", "name": "目标·隐秘行动Ⅲ", "team_cap": 4},
+    {"id": "cost_recover_50", "name": "目标·深度渗透Ⅱ", "sp_recover_penalty": 0.5},
+    {"id": "cost_recover_75", "name": "目标·深度渗透Ⅲ", "sp_recover_penalty": 0.75},
+    {"id": "last_line", "name": "目标·最后防线", "note": "防御点可承受1敌（生存压力极大）"}
+  ]
+}
