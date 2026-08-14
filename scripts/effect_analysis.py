@@ -80,7 +80,7 @@ def clean(desc, bb):
 def extract_support(cur, char_id, name, profession, caster_atk=None, stats=None):
     """返回 (effects dict, 说明字符串)；各效果按技能覆盖率(uptime)加权，同类取最高。"""
     fx = {'fragile': 0.0, 'def_shred_pct': 0.0, 'def_shred_flat': 0.0,
-          'slow': 0.0, 'control_dur': 0.0, 'ally_atk_pct': 0.0,
+          'res_shred': 0.0, 'slow': 0.0, 'control_dur': 0.0, 'ally_atk_pct': 0.0,
           'ally_as': 0.0, 'enemy_atk': 0.0, 'inspire_pct': 0.0,
           'inspire_atk': caster_atk or 0.0, 'stun': 0.0, 'bind': 0.0,
           'frozen': 0.0, 'sleep': 0.0, 'palsy': 0.0, 'float': 0.0, 'talent': 0.0}
@@ -141,6 +141,11 @@ def extract_support(cur, char_id, name, profession, caster_atk=None, stats=None)
             if m and ('敌人' in desc or '目标' in desc or '敌方' in desc):
                 fx['def_shred_pct'] = max(fx['def_shred_pct'], float(m.group(1)) / 100.0 * uptime)
                 notes.append(f'减防{m.group(1)}%(覆盖{uptime:.0%})')
+        if '法术抗性' in desc and ('下降' in desc or '降低' in desc or '减少' in desc):
+            m = re.search(r'法术抗性[^。]{0,6}(?:下降|降低|减少)[^。]{0,4}?(\d+(?:\.\d+)?)', desc)
+            if m and ('敌人' in desc or '目标' in desc or '敌方' in desc):
+                fx['res_shred'] = max(fx['res_shred'], float(m.group(1)))
+                notes.append(f'减抗{float(m.group(1)):.0f}')
         for kw, key in (('晕眩', 'stun'), ('眩晕', 'stun'), ('停顿', 'bind'),
                         ('冻结', 'frozen'), ('沉睡', 'sleep'), ('麻痹', 'palsy'),
                         ('浮空', 'float')):
