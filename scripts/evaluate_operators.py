@@ -329,6 +329,8 @@ def main():
                     'burst_eff': int(eff) if eff is not None else None,
                     'dps_eff': round(eff / rec['duration'], 1) if (eff and rec['duration']) else None,
                     'cycle_dps_eff': round(eff / rec['cycle_time'], 1) if (eff and rec.get('cycle_time')) else None,
+                    'cycle_dps_avg_eff': round((eff + (rec.get('idle_damage') or 0)) / rec['cycle_time'], 1)
+                    if (eff and rec.get('cycle_time')) else None,
                     'heal_total': int(rec['total_damage']) if is_heal else None,
                     'heal_dps': round(rec['total_damage'] / rec['duration'], 1) if (is_heal and rec['duration']) else None,
                     'heal_cycle_dps': round(rec['total_damage'] / rec['cycle_time'], 1)

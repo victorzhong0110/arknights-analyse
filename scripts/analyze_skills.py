@@ -219,7 +219,8 @@ def compute(ch, s, bb, sp, atk, bat):
         if interval is None and mult is not None and '停止攻击' not in desc \
                 and '立即' not in desc and '下次攻击' not in desc and '部署后' not in desc:
             interval = bat  # 持续型攻击技能（无间隔修饰）按基础攻击间隔
-        attack_count = math.floor(dur / interval) if interval else 1
+        # 攻击次数：向上取整（含 0 时刻首击；与 ArkDPS ceil 口径一致）
+        attack_count = math.ceil(dur / interval) if interval else 1
     else:
         # 弹药型技能：attack@*trigger_time = 弹药数（攻击次数）
         tk = find_key(bb, re.compile(r'trigger_time'), prefer='attack@trigger_time')
@@ -335,18 +336,50 @@ def compute(ch, s, bb, sp, atk, bat):
     rec['sp_type'] = sp_type
     rec['sp_cost'] = sp.get('spCost')
     rec['init_sp'] = sp.get('initSp')
+
+    def add_idle_attack(cycle_time, dur):
+        """空窗期普攻：平均DPS 口径 = (技能伤害 + 空窗普攻) / 循环（与 ArkDPS g_dps 一致）。
+        空窗普攻用基础攻击间隔 bat（不含技能 bat_mod/interval 修饰）。"""
+        idle = max(cycle_time - (dur or 0), 0)
+        if idle <= 0 or not bat:
+            return
+        idle_interval = bat * 100.0 / (100.0 + attack_speed) if attack_speed else bat
+        idle_cnt = max(int(math.ceil(idle / idle_interval)), 0)
+        if idle_cnt <= 0:
+            return
+        # 普攻单次 = atk × 1.0，按伤害类型减防/减抗
+        per_hit_plain = atk
+        if dmg_type == 'physical':
+            idle_eff = max(per_hit_plain - max(TARGET_DEF - pen_fixed - TARGET_DEF * pen_pct, 0),
+                           per_hit_plain * 0.05)
+        elif dmg_type == 'arts':
+            idle_eff = per_hit_plain * max(1 - max(TARGET_RES - res_pen, 0) / 100, 0)
+        elif dmg_type == 'mixed':
+            p1 = max(per_hit_plain - max(TARGET_DEF - pen_fixed - TARGET_DEF * pen_pct, 0),
+                     per_hit_plain * 0.05)
+            m1 = per_hit_plain * (magic_mult or 0) * max(1 - max(TARGET_RES - res_pen, 0) / 100, 0)
+            idle_eff = p1 + m1
+        else:
+            idle_eff = per_hit_plain
+        idle_dmg = idle_eff * idle_cnt
+        rec['idle_damage'] = idle_dmg
+        rec['idle_count'] = idle_cnt
+        rec['cycle_dps_avg'] = (total + idle_dmg) / cycle_time
+
     # 充能型技能（可充能N次）：循环 = 充满 N 层的时间（N×spCost - initSp）
     if sp_type == 1 and sp.get('spCost') and sp.get('maxChargeTime') and cnt and '可充能' in desc:
         cycle_time = max(cnt * sp['spCost'] - (sp.get('initSp') or 0), 0)
         if cycle_time > 0:
             rec['cycle_time'] = cycle_time
             rec['cycle_dps'] = total / cycle_time
+            add_idle_attack(cycle_time, 0)
     elif sp_type == 1 and sp.get('spCost'):
         charge = max(sp['spCost'] - (sp.get('initSp') or 0), 0)
         cycle_time = charge + (dur if (dur and dur > 0) else 0)
         if cycle_time > 0:
             rec['cycle_time'] = cycle_time
             rec['cycle_dps'] = total / cycle_time
+            add_idle_attack(cycle_time, dur)
     return rec
 
 
