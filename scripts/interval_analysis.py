@@ -109,6 +109,9 @@ def load_skills(cur):
                     "ORDER BY level DESC LIMIT 1", (ch['char_id'],)).fetchone() or (None,))[0],
                 'burst_raw': rec['total_damage'],
                 'elemental_dps': rec.get('elemental_dps') or 0,
+                'burst_dps': rec.get('burst_dps') or 0,
+                'element_type': rec.get('element_type'),
+                'extra_raw': (rec.get('burst_extra_dps') or 0) * ((rec.get('time_to_burst') or 0) + 10.0) / 10.0,
                 'pen_fixed': bb.get('def_penetrate_fixed') or bb.get('attack@def_penetrate_fixed') or 0,
                 'pen_pct': bb.get('def_penetrate') or 0,
                 'res_pen': bb.get('magic_resist_penetrate_fixed') or 0,
@@ -137,7 +140,7 @@ def eff_hit(sk, d, r, el=0):
     extra = 0.0
     if sk['def_extra']:
         extra = d * sk['def_extra'] * max(1 - r / 100, 0)  # 额外法术伤害
-    elem = sk['elemental_dps'] * max(1 - el / 100, 0) if el else sk['elemental_dps']
+    elem = sk['burst_dps'] * max(1 - el / 100, 0) if el else sk['burst_dps']
     return main, extra, elem
 
 
@@ -237,6 +240,40 @@ def main():
     _, w_ab = sweep([s for s in arts if not s['cycle_time'] and not s['duration']],
                     range(0, RES_MAX + 1, RES_STEP), 'res',
                     'interval_arts_burst.csv', 'interval_arts_burst_winners.csv', 'burst')
+
+    # 损伤抵抗扫描（影响元素损伤积累→爆条快慢）
+    elem_skills = [s for s in skills if s['elemental_dps'] > 0]
+    dres_grid = []
+    for v in range(0, 101, 1):
+        best = None
+        for sk in elem_skills:
+            acc = sk['elemental_dps'] * (1 - v / 100)
+            t = A.BURST_THRESHOLD / acc if acc > 0 else None
+            if not t:
+                continue
+            cd = A.BURST_COOLDOWN.get(sk.get('element_type') or 'neural', 10.0)
+            trig = A.BURST_TRIGGER.get(sk.get('element_type') or 'neural', 0.0) / (t + cd)
+            extra = sk.get('extra_raw', 0) * cd / (t + cd)
+            val = trig + extra
+            if best is None or val > best[2]:
+                best = (sk['char'], sk['skill'], val)
+        if best:
+            dres_grid.append({'value': v, 'winner': best[0], 'skill': best[1], 'dps': round(best[2], 1)})
+    with open(os.path.join(OUT, 'interval_damage_res.csv'), 'w', newline='', encoding='utf-8-sig') as f:
+        w = csv.DictWriter(f, fieldnames=['value', 'winner', 'skill', 'dps'])
+        w.writeheader(); w.writerows(dres_grid)
+    segs, prev = [], None
+    for r in dres_grid:
+        cur = (r['winner'], r['skill'])
+        if prev is None: seg_start, seg_val = r['value'], r['dps']
+        elif cur != prev:
+            segs.append((seg_start, r['value'], prev[0], prev[1], seg_val))
+            seg_start, seg_val = r['value'], r['dps']
+        prev = cur
+    if prev: segs.append((seg_start, 100, prev[0], prev[1], seg_val))
+    print('\n== 损伤抵抗 0-100 优势区间（爆条快慢维度）==')
+    for a, b, w, s, d in segs:
+        print(f"  损伤抵抗 {a:>3d}-{b:>3d}: {w}「{s}」 {d:>8,.1f}")
 
     # 处决类（赤霄·天喟）：按敌人 HP 基准
     exec_rows = []

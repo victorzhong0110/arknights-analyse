@@ -55,6 +55,8 @@ CREATE TABLE IF NOT EXISTS enemy_stats_manual (
     move_speed REAL, attack_speed REAL, base_attack_time REAL, range_id TEXT,
     hp_recovery_per_sec REAL, sp_recovery_per_sec REAL,
     damage_type TEXT, weight INTEGER, notes TEXT,
+    elemental_resistance INTEGER, damage_resistance INTEGER,
+    taunt_level INTEGER, status_resist TEXT,
     PRIMARY KEY (enemy_id, source, level)
 );
 CREATE TABLE IF NOT EXISTS crisis_seasons (

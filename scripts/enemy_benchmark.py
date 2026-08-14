@@ -50,7 +50,8 @@ def main():
             where, params = ('JOIN enemies e ON e.enemy_id = s.enemy_id '
                              'AND e.enemy_level = ?'), (enemy_level,)
         q = f"""
-            SELECT s.def, s.magic_resistance, s.max_hp
+            SELECT s.def, s.magic_resistance, s.max_hp,
+                   s.elemental_resistance, s.damage_resistance
             FROM enemy_stats_manual s {where}
             WHERE s.level = 0 AND s.def IS NOT NULL AND s.magic_resistance IS NOT NULL
         """
@@ -60,24 +61,32 @@ def main():
         defs = sorted(d[0] for d in data)
         res = sorted(d[1] for d in data)
         hps = sorted(d[2] for d in data if d[2] is not None)
+        eres = sorted(d[3] for d in data if d[3] is not None)
+        dres = sorted(d[4] for d in data if d[4] is not None)
         row = {'group': gname, 'n': len(data)}
         for p in PCTS:
             row[f'def_p{p}'] = round(percentile(defs, p), 1)
             row[f'res_p{p}'] = round(percentile(res, p), 1)
         row['def_mean'] = round(sum(defs) / len(defs), 1)
         row['res_mean'] = round(sum(res) / len(res), 1)
+        row['elem_res_mean'] = round(sum(eres) / len(eres), 1) if eres else None
+        row['elem_res_p90'] = round(percentile(eres, 90), 1) if eres else None
+        row['damage_res_mean'] = round(sum(dres) / len(dres), 1) if dres else None
+        row['damage_res_p90'] = round(percentile(dres, 90), 1) if dres else None
         if hps:
             row['hp_p50'] = int(percentile(hps, 50))
             row['hp_mean'] = int(sum(hps) / len(hps))
         rows.append(row)
         print(f"{gname:8s} n={len(data):5d}  DEF P25/50/75/90 = "
               f"{row['def_p25']}/{row['def_p50']}/{row['def_p75']}/{row['def_p90']}  "
-              f"RES P25/50/75/90 = {row['res_p25']}/{row['res_p50']}/{row['res_p75']}/{row['res_p90']}")
+              f"RES P25/50/75/90 = {row['res_p25']}/{row['res_p50']}/{row['res_p75']}/{row['res_p90']}  "
+              f"元素抗性均={row['elem_res_mean']} 损伤抵抗均={row['damage_res_mean']}")
 
     os.makedirs(OUT, exist_ok=True)
     path = os.path.join(OUT, 'enemy_benchmark.csv')
     cols = ['group', 'n'] + [f'{k}_p{p}' for k in ('def', 'res') for p in PCTS] \
-        + ['def_mean', 'res_mean', 'hp_p50', 'hp_mean']
+        + ['def_mean', 'res_mean', 'elem_res_mean', 'elem_res_p90',
+           'damage_res_mean', 'damage_res_p90', 'hp_p50', 'hp_mean']
     with open(path, 'w', newline='', encoding='utf-8-sig') as f:
         w = csv.DictWriter(f, fieldnames=cols, extrasaction='ignore')
         w.writeheader()

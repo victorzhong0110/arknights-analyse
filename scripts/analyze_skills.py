@@ -293,6 +293,7 @@ def compute(ch, s, bb, sp, atk, bat):
         rec['elemental_total'] = elem_total
         rec['element_type'] = elem_type
         if active and active > 0:
+            # elemental_dps = 元素损伤"积累"速率（填条，非直接伤害），用于爆条时间
             elemental_dps = elem_total / active
             rec['elemental_dps'] = elemental_dps
             t_burst = BURST_THRESHOLD / elemental_dps if elemental_dps > 0 else None
@@ -301,18 +302,19 @@ def compute(ch, s, bb, sp, atk, bat):
             rec['time_to_burst_boss'] = (BURST_THRESHOLD_BOSS / elemental_dps
                                          if elemental_dps > 0 else None)
             if t_burst:
-                # 爆条触发伤害（元素伤害，按各类型冷却均摊）
+                # 爆条触发伤害（6000/7000/5000/12000 元素伤害）按爆条周期均摊
                 trig_dmg = BURST_TRIGGER.get(elem_type, 0.0)
                 cd = BURST_COOLDOWN.get(elem_type, 10.0)
                 cycle = t_burst + cd
                 if trig_dmg > 0:
                     rec['burst_trigger_dps'] = trig_dmg / cycle
-                # 爆条状态期间每秒额外元素/损伤伤害（真言类：对爆条目标附加元素伤害）
+                # 爆条状态期间每秒额外元素伤害（真言类：对爆条目标附加元素伤害）
                 extra_hits = hits_total / active
                 extra_dps = atk * (el_scale or 0) * extra_hits
                 if extra_dps > 0:
                     rec['burst_extra_dps'] = extra_dps * cd / cycle
-                rec['burst_dps'] = elemental_dps + (rec.get('burst_trigger_dps') or 0) \
+                # 爆条总伤害 DPS = 触发伤害 + 状态额外伤害（积累速率不是伤害，不计入）
+                rec['burst_dps'] = (rec.get('burst_trigger_dps') or 0) \
                     + (rec.get('burst_extra_dps') or 0)
 
     if dur and dur > 0:

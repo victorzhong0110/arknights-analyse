@@ -45,48 +45,92 @@ def api_get(params, retries=3):
 
 
 def search_page(name):
-    """查 wiki page 名（优先全匹配，回退第一条搜索结果）。"""
-    try:
-        data = api_get({'action': 'query', 'format': 'json',
-                        'list': 'search', 'srsearch': name, 'srlimit': 5})
-        hits = data.get('query', {}).get('search', [])
-        for h in hits:
-            if h.get('title') == name:
-                return name
-        if hits:
-            return hits[0]['title']
-    except Exception:
-        pass
+    """敌人名通常即 PRTS 页面标题；搜索 API 不可靠（会返回 /spine 等模型页），直接按名抓取。"""
     return name
 
 
-def fetch_wikitext(page_title):
-    data = api_get({'action': 'parse', 'format': 'json', 'page': page_title,
-                    'prop': 'wikitext', 'formatversion': '2'})
-    return data.get('parse', {}).get('wikitext', '')
+def fetch_wikitext(page_title, retries=4):
+    """抓取页面 wikitext。api.php 会被 403，改用移动端 action=raw；带重试退避。"""
+    url = 'https://m.prts.wiki/index.php?title=%s&action=raw' % urllib.parse.quote(page_title)
+    last = None
+    for i in range(retries):
+        try:
+            req = urllib.request.Request(url, headers={'User-Agent': UA})
+            with urllib.request.urlopen(req, timeout=25) as r:
+                return r.read().decode('utf-8')
+        except Exception as e:
+            last = e
+            time.sleep(1.5 * (i + 1))
+    raise last
+
+
+def split_fields(body):
+    """按 | 分割模板字段，跳过 {{...}} 嵌套模板内的 |。"""
+    fields, depth, cur = [], 0, ''
+    i = 0
+    while i < len(body):
+        if body.startswith('{{', i):
+            depth += 1
+            cur += '{{'
+            i += 2
+        elif body.startswith('}}', i):
+            depth -= 1
+            cur += '}}'
+            i += 2
+        elif body[i] == '|' and depth == 0:
+            fields.append(cur)
+            cur = ''
+            i += 1
+        else:
+            cur += body[i]
+            i += 1
+    fields.append(cur)
+    return fields
+
+
+def parse_templates(wikitext, name):
+    """按 {{name ...}} 深度计数匹配，提取所有模板体（处理嵌套模板）。"""
+    results, start_tag, idx = [], '{{' + name, 0
+    while True:
+        i = wikitext.find(start_tag, idx)
+        if i < 0:
+            break
+        j = i + len(start_tag)
+        depth, k = 1, j
+        while k < len(wikitext) and depth > 0:
+            if wikitext.startswith('{{', k):
+                depth += 1
+                k += 2
+            elif wikitext.startswith('}}', k):
+                depth -= 1
+                k += 2
+            else:
+                k += 1
+        results.append(wikitext[j:k - 2])  # 去掉结尾 }}
+        idx = k
+    return results
 
 
 def parse_levels(wikitext):
     """从 wikitext 解析所有 {{敌人信息/levelcontent}} 模板。"""
     levels = []
-    for m in re.finditer(
-            r'{{敌人信息/levelcontent\s*(.*?)}}\s*\n', wikitext, re.DOTALL):
-        body = m.group(1)
+    for body in parse_templates(wikitext, '敌人信息/levelcontent'):
         d = {'_index': 0}
-        for fm in re.finditer(r'\|(\S+?)=([^|]*?)(?=\||$)', body):
-            key = fm.group(1).strip()
-            val = fm.group(2).strip()
-            d[key] = val
+        for fm in split_fields(body):
+            if '=' in fm:
+                key, val = fm.split('=', 1)
+                d[key.strip()] = val.strip()
         try:
             d['_index'] = int(d.get('index', '0'))
         except Exception:
             pass
         levels.append(d)
     common = {}
-    m = re.search(r'{{敌人信息/common2\s*(.*?)}}\s*\n', wikitext, re.DOTALL)
-    if m:
-        for fm in re.finditer(r'\|(\S+?)=([^|]*?)(?=\||$)', m.group(1)):
-            common[fm.group(1).strip()] = fm.group(2).strip()
+    for body in parse_templates(wikitext, '敌人信息/common2'):
+        for fm in split_fields(body):
+            if '=' in fm:
+                key, val = fm.split('=', 1)
+                common[key.strip()] = val.strip()
     return levels, common
 
 
@@ -127,14 +171,30 @@ def levels_to_rows(levels):
     return rows
 
 
+def to_resist(s):
+    """异常状态抗性：无→0，有/免疫→1，空→None。"""
+    if s in (None, '', '无'):
+        return 0
+    if s in ('有', '免疫', '是'):
+        return 1
+    return None
+
+
+STATUS_RESIST_FIELDS = ('眩晕抗性', '沉默抗性', '沉睡抗性', '冻结抗性', '浮空抗性',
+                        '战栗抗性', '恐惧抗性', '麻痹抗性', '诱导抗性', '传送抗性', '缚地抗性')
+
+
 def fetch_one(enemy_id, name):
     page = search_page(name)
     wt = fetch_wikitext(page)
+    if '敌人信息' not in wt:
+        return []  # 无敌人模板（模型页/无页面）
     levels, common = parse_levels(wt)
     rows = levels_to_rows(levels)
     out = []
     for r in rows:
         level = r['_index']
+        status_resist = {f: to_resist(r.get(f)) for f in STATUS_RESIST_FIELDS}
         row = {
             'enemy_id': enemy_id,
             'source': 'prts',
@@ -151,10 +211,14 @@ def fetch_one(enemy_id, name):
             'sp_recovery_per_sec': to_float(r.get('sp恢复速度')),
             'damage_type': common.get('伤害类型'),
             'weight': to_int(r.get('重量等级')),
+            'elemental_resistance': to_int(r.get('元素抗性')),
+            'damage_resistance': to_int(r.get('损伤抵抗')),
+            'taunt_level': to_int(r.get('基础嘲讽等级')),
+            'status_resist': json.dumps(status_resist, ensure_ascii=False),
             'notes': None,
         }
         if all(v is None for k, v in row.items()
-               if k not in ('enemy_id', 'source', 'level')):
+               if k not in ('enemy_id', 'source', 'level', 'status_resist')):
             continue
         out.append(row)
     return out
@@ -167,10 +231,19 @@ def main():
 
     conn = sqlite3.connect(DB)
     cur = conn.cursor()
+    # 扩展列（元素抗性/损伤抵抗/嘲讽/异常状态抗性）
+    for col, typ in (('elemental_resistance', 'INTEGER'), ('damage_resistance', 'INTEGER'),
+                     ('taunt_level', 'INTEGER'), ('status_resist', 'TEXT')):
+        try:
+            cur.execute(f'ALTER TABLE enemy_stats_manual ADD COLUMN {col} {typ}')
+        except Exception:
+            pass
 
     targets = cur.execute(
-        "SELECT enemy_id, name FROM enemies WHERE enemy_level IN ('ELITE','BOSS') "
-        "AND name NOT LIKE '%鸭%' ORDER BY sort_id LIMIT ?", (limit,)).fetchall()
+        "SELECT enemy_id, name FROM enemies WHERE name NOT LIKE '%鸭%' "
+        "AND enemy_id NOT IN (SELECT enemy_id FROM enemy_stats_manual "
+        "WHERE elemental_resistance IS NOT NULL AND damage_resistance IS NOT NULL) "
+        "ORDER BY sort_id LIMIT ?", (limit,)).fetchall()
     print(f'目标敌人: {len(targets)} 个')
 
     n_ok = n_skip = n_err = 0
@@ -195,20 +268,22 @@ def main():
                 else:
                     cur.execute("""
                         INSERT OR REPLACE INTO enemy_stats_manual
-                        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                     """, (r['enemy_id'], r['source'], r['level'],
                           r['max_hp'], r['atk'], r['def'], r['magic_resistance'],
                           r['move_speed'], r['attack_speed'], r['base_attack_time'],
                           r['range_id'], r['hp_recovery_per_sec'],
                           r['sp_recovery_per_sec'], r['damage_type'],
-                          r['weight'], r['notes']))
+                          r['weight'], r['notes'],
+                          r['elemental_resistance'], r['damage_resistance'],
+                          r['taunt_level'], r['status_resist']))
             n_ok += 1
             sys.stdout.write(f'\r  成功: {n_ok}  跳过: {n_skip}  失败: {n_err}')
             sys.stdout.flush()
         except Exception as e:
             n_err += 1
             print(f'\n  ERR {enemy_id} {name}: {e}')
-        time.sleep(0.4)
+        time.sleep(1.2)
     if not dry:
         conn.commit()
     conn.close()
