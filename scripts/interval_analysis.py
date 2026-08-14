@@ -97,8 +97,9 @@ def load_skills(cur):
             out.append({
                 'char': ch['name'], 'skill': rec['skill_name'], 'profession': ch['profession'],
                 'sub': ch['sub_profession_id'], 'rarity': ch['rarity'],
-                'dmg_type': dmg_type, 'atk': stats['atk'],
-                'mult': rec['mult'], 'hit_times': rec['hit_times'],
+                'dmg_type': rec['damage_type'], 'atk': stats['atk'],
+                'mult': rec['mult'], 'magic_mult': rec.get('magic_mult'),
+                'hit_times': rec['hit_times'],
                 'attack_count': rec['attack_count'],
                 'chain_times': rec.get('chain_times') or 0,
                 'chain_scale': rec.get('chain_scale'),
@@ -125,7 +126,7 @@ def load_skills(cur):
 
 
 def eff_hit(sk, d, r, el=0):
-    """单次命中有效伤害（含无视防御/刻俄柏 def_extra / 元素抗性）。"""
+    """单次命中有效伤害（含无视防御/刻俄柏 def_extra / 混伤 / 元素抗性）。"""
     per_hit = sk['atk'] * sk['mult']
     t = sk['dmg_type']
     if t == 'physical':
@@ -135,7 +136,13 @@ def eff_hit(sk, d, r, el=0):
         main = per_hit * max(1 - max(r - sk['res_pen'], 0) / 100, 0)
     elif t == 'true':
         main = per_hit
-    else:  # mixed 按物理
+    elif t == 'mixed':
+        # 混伤：物理部分 + 法术部分
+        eff_def = max(d - sk['pen_fixed'] - d * sk['pen_pct'], 0)
+        phys = max(per_hit - eff_def, per_hit * 0.05)
+        magic = sk['atk'] * (sk.get('magic_mult') or 0) * max(1 - max(r - sk['res_pen'], 0) / 100, 0)
+        main = phys + magic
+    else:  # 未知按物理
         eff_def = max(d - sk['pen_fixed'] - d * sk['pen_pct'], 0)
         main = max(per_hit - eff_def, per_hit * 0.05)
     extra = 0.0

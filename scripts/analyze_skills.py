@@ -134,7 +134,7 @@ def compute(ch, s, bb, sp, atk, bat):
         # 变体倍率：仅取 attack@ 前缀、且非辅助倍率键（attack@s3_atk_scale / attack@atk_scale_3）
         AUX = ('min_', 'max_', 'splash_', 'extra_', 'proj_', 'chain.', 'bounce_',
                'main_', 'fin_', 'ex_', 'base_', 'element_', 'ep_', 'burn_',
-               'cannon_', 'append_')
+               'cannon_', 'append_', 'magic_', 'arts_', 'split_', 'physic_')
         for k in sorted(bb):
             if (k.startswith('attack@') and ('atk_scale' in k or 'damage_scale' in k)
                     and not any(a in k for a in AUX) and isinstance(bb[k], (int, float))):
@@ -148,6 +148,12 @@ def compute(ch, s, bb, sp, atk, bat):
 
     # 伤害类型
     dmg_type = detect_damage_type(desc, ch['profession'])
+    # 混伤识别：法术倍率键（含 attack@s2.magic_atk_scale 等变体）→ 物理+法术混合
+    magic_key = find_key(bb, re.compile(r'magic_atk_scale|atk_scale_magic|arts_atk_scale'))
+    magic_mult = bb.get(magic_key) if magic_key else None
+    if magic_mult:
+        rec['magic_mult'] = magic_mult
+        dmg_type = 'mixed'
     rec['damage_type'] = dmg_type
 
     # 连击数（每次攻击命中次数）
@@ -252,7 +258,7 @@ def compute(ch, s, bb, sp, atk, bat):
     pen_pct = bb.get('def_penetrate') or 0
     res_pen = bb.get('magic_resist_penetrate_fixed') or 0
 
-    # 有效伤害（考虑目标防御/法抗/无视防御）
+    # 有效伤害（考虑目标防御/法抗/无视防御/混伤）
     if dmg_type == 'physical':
         eff_def = max(TARGET_DEF - pen_fixed - TARGET_DEF * pen_pct, 0)
         eff_hit = max(per_hit - eff_def, per_hit * 0.05)  # 物理保底 5%
@@ -260,8 +266,13 @@ def compute(ch, s, bb, sp, atk, bat):
         eff_hit = per_hit * max(1 - max(TARGET_RES - res_pen, 0) / 100, 0)  # 法术抗性
     elif dmg_type == 'true':
         eff_hit = per_hit                                    # 真伤无视防御
+    elif dmg_type == 'mixed':
+        # 混伤：物理部分(per_hit=atk×mult 减防5%保底) + 法术部分(atk×magic_mult 减抗)
+        phys_part = max(per_hit - max(TARGET_DEF - pen_fixed - TARGET_DEF * pen_pct, 0), per_hit * 0.05)
+        magic_part = atk * (magic_mult or 0) * max(1 - max(TARGET_RES - res_pen, 0) / 100, 0)
+        eff_hit = phys_part + magic_part
     else:
-        eff_hit = None                                       # 混合/未知，不折算
+        eff_hit = None                                       # 未知，不折算
     rec['per_hit_effective'] = eff_hit
     rec['effective_total_damage'] = eff_hit * hit_times * attack_count if eff_hit is not None else None
 

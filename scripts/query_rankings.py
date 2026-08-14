@@ -120,11 +120,12 @@ def main():
         ordered = sorted(scored, key=lambda x: -val(x) if desc else val(x))
         ordered = [x for x in ordered if val(x)]
         print(f'\n== {label} TOP{min(args.top, len(ordered))} ==')
-        for sk, m, ttk in ordered[:args.top]:
+        for i, (sk, m, ttk) in enumerate(ordered[:args.top], 1):
             v = val((sk, m, ttk))
+            tag = ' ★优势区间' if i == 1 else ''
             elem = f" 元素{m['elem']:.0f}" if m['elem'] > 0 else ''
-            print(f"  {sk['char']:<6s} {sk['skill']:<8s} {sk['dmg_type']:<8s} "
-                  f"{v:>10,.1f}{elem}")
+            print(f"  #{i:<2d} {sk['char']}·{sk['skill']} [{sk['dmg_type']}] "
+                  f"{v:>10,.1f}{elem}{tag}")
     conn.close()
 
 

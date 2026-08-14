@@ -40,7 +40,7 @@ MAX_TARGETS = 8
 
 
 def effective_hit(sk, def_, res):
-    """单次命中有效伤害（含无视防御/刻俄柏 def_extra）。"""
+    """单次命中有效伤害（含无视防御/刻俄柏 def_extra/混伤）。"""
     per_hit = sk['atk'] * sk['mult']
     t = sk['dmg_type']
     if t == 'physical':
@@ -50,6 +50,11 @@ def effective_hit(sk, def_, res):
         main = per_hit * max(1 - max(res - sk['res_pen'], 0) / 100, 0)
     elif t == 'true':
         main = per_hit
+    elif t == 'mixed':
+        eff_def = max(def_ - sk['pen_fixed'] - def_ * sk['pen_pct'], 0)
+        phys = max(per_hit - eff_def, per_hit * 0.05)
+        magic = sk['atk'] * (sk.get('magic_mult') or 0) * max(1 - max(res - sk['res_pen'], 0) / 100, 0)
+        main = phys + magic
     else:
         eff_def = max(def_ - sk['pen_fixed'] - def_ * sk['pen_pct'], 0)
         main = max(per_hit - eff_def, per_hit * 0.05)
