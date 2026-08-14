@@ -8,3 +8,7 @@ __pycache__/
 
 # 临时/构建产物
 *.log
+# 私服运行产物
+private-server/.venv/
+private-server/__pycache__/
+private-server/server/__pycache__/
