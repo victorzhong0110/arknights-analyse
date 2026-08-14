@@ -39,28 +39,31 @@ ATK_MULTS = [1.0, 1.2, 1.55, 2.0]      # 刺激 无/Ⅰ/Ⅱ/Ⅲ
 MAX_TARGETS = 8
 
 
-def effective_hit(sk, def_, res):
-    """单次命中有效伤害（含无视防御/刻俄柏 def_extra/混伤）。"""
-    per_hit = sk['atk'] * sk['mult']
+def effective_hit(sk, def_, res, atk_mult=1.0, atk_flat=0.0, dmg_mult=1.0,
+                  def_shred_pct=0.0, def_shred_flat=0.0, res_shred=0.0):
+    """单次命中有效伤害（含无视防御/刻俄柏 def_extra/混伤/辅助buff 真实重算）。"""
+    atk = sk['atk'] * atk_mult + atk_flat
+    per_hit = atk * sk['mult']
+    eff_def = max(def_ * (1 - def_shred_pct) - def_shred_flat
+                  - sk['pen_fixed'] - def_ * sk['pen_pct'], 0)
+    eff_res = max(res - res_shred - sk['res_pen'], 0)
     t = sk['dmg_type']
     if t == 'physical':
-        eff_def = max(def_ - sk['pen_fixed'] - def_ * sk['pen_pct'], 0)
         main = max(per_hit - eff_def, per_hit * 0.05)
     elif t == 'arts':
-        main = per_hit * max(1 - max(res - sk['res_pen'], 0) / 100, 0)
+        main = per_hit * max(1 - eff_res / 100, 0)
     elif t == 'true':
         main = per_hit
     elif t == 'mixed':
-        eff_def = max(def_ - sk['pen_fixed'] - def_ * sk['pen_pct'], 0)
         phys = max(per_hit - eff_def, per_hit * 0.05)
-        magic = sk['atk'] * (sk.get('magic_mult') or 0) * max(1 - max(res - sk['res_pen'], 0) / 100, 0)
+        magic = atk * (sk.get('magic_mult') or 0) * max(1 - eff_res / 100, 0)
         main = phys + magic
     else:
-        eff_def = max(def_ - sk['pen_fixed'] - def_ * sk['pen_pct'], 0)
         main = max(per_hit - eff_def, per_hit * 0.05)
+    main *= dmg_mult
     extra = 0.0
     if sk['def_extra']:
-        extra = def_ * sk['def_extra'] * max(1 - res / 100, 0)
+        extra = eff_def * sk['def_extra'] * max(1 - eff_res / 100, 0) * dmg_mult
     return main, extra
 
 
@@ -77,6 +80,45 @@ def elemental_dps(sk, eres, dres):
     trig = A.BURST_TRIGGER.get(sk.get('element_type') or 'neural', 0.0) / (t + cd)
     extra = (sk.get('extra_raw') or 0) * cd / (t + cd)
     return (trig + extra) * (1 - eres / 100)
+
+
+def skill_metrics_buffed(sk, def_, res, eres, dres, targets, atk_mult=1.0, atk_flat=0.0,
+                         dmg_mult=1.0, as_mult=1.0, def_shred_pct=0.0,
+                         def_shred_flat=0.0, res_shred=0.0):
+    """核心指标（含辅助buff 真实重算：攻击/增伤/攻速/减防/减抗）。"""
+    main, extra = effective_hit(sk, def_, res, atk_mult, atk_flat, dmg_mult,
+                                def_shred_pct, def_shred_flat, res_shred)
+    per_atk = main * sk['hit_times'] + extra * sk['hit_times']
+    multi = per_atk
+    if sk['chain_times'] and sk['chain_scale']:
+        chain_hits = min(max(targets - 1, 0), sk['chain_times'])
+        multi += sk['atk'] * atk_mult * sk['chain_scale'] * chain_hits \
+            * max(1 - max(res - res_shred - sk['res_pen'], 0) / 100, 0) * dmg_mult
+    if sk['max_target'] > 1:
+        multi = max(multi, (main + extra) * sk['hit_times'] * min(sk['max_target'], targets))
+    burst = per_atk * sk['attack_count']
+    burst_multi = multi * sk['attack_count']
+    # 攻速 buff：持续型技能攻击次数提升（弹药型不受影响）
+    ac = sk['attack_count']
+    if sk.get('duration') and as_mult > 1.0:
+        ac = max(int(sk['attack_count'] * as_mult), 1)
+    elem = elemental_dps(sk, eres, dres) * dmg_mult
+    cyc = sk.get('cycle_time')
+    dur = sk.get('duration')
+    if cyc:
+        cycle_dps = (per_atk * ac) / cyc + elem
+        active_dps = (per_atk * ac) / dur + elem if dur else burst + elem
+    elif dur:
+        cycle_dps = (per_atk * ac) / dur + elem
+        active_dps = cycle_dps
+    else:
+        cycle_dps = burst + elem
+        active_dps = cycle_dps
+    return {
+        'burst': burst, 'burst_multi': burst_multi, 'active_dps': active_dps,
+        'cycle_dps': cycle_dps, 'dph': sk['atk'] * sk['mult'] * atk_mult,
+        'elem': elem, 'time_to_burst': None,
+    }
 
 
 def skill_metrics(sk, def_, res, eres, dres, targets):
