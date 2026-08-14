@@ -76,6 +76,27 @@
 7. 元素爆条的"爆条状态"时长（建模按 10 秒冷却近似）与麻痹消耗节奏为近似；爆条触发伤害未按
    元素抗性二次削减（元素抗性同时影响积累与触发，建模只作用于积累）
 
+## 核心数据排行库（S0）与辅助价值评分（S1-S4）
+
+### 排行库（SQLite 表，`scripts/rank_engine.py` / `query_rankings.py`）
+- 按轴独立计算（物理→DEF、法术→RES、元素→ERES/DRES、真伤→恒定）避免全网格笛卡尔积
+- 表：`skill_metrics`（静态指标）、`rank_physical/arts/elemental/true`（各轴 TOP-50）、
+  `advantage_intervals`（各轴#1优势区间，稀疏段）
+- 查询：`python3 scripts/query_rankings.py --enemy 爱国者 --tags def_3,hp_3 --targets 8 --top 20`
+  输出 循环DPS/技能DPS/单目标总伤/满8目标总伤/DPH/TTK/爆条时间 排行
+- 合约词条表 `data/raw/crisis_tags.json`（方案A，含互斥组；各赛季数值略有差异）
+
+### 辅助价值评分（`scripts/support_value.py`，分场景）
+- **S1 原语**：脆弱/减防/减抗/友方攻击%/鼓舞/攻速/减速/控制(晕眩停顿冻结沉睡麻痹浮空)/
+  敌方减攻/治疗/护盾/庇护/嘲讽/复活/免疫（含 uptime/覆盖）
+- **S2 转化**（统一口径）：
+  - 伤害贡献 = 增伤% × 队伍DPS × 击杀窗口（整场）
+  - 时间贡献 = 额外输出窗口 × 队伍DPS，**按"击杀时间缺口"封顶**
+    （缺口 = 击杀所需时间 − 敌人在射程内自然停留时间）
+  - 生存贡献 = 承伤点（治疗HPS×窗口 + 护盾 + 庇护折算 + 嘲讽/复活/免疫）
+- **S3 场景**：合约Boss战 / 日常挂机 / 高压群怪（敌人属性+射程-移速+队伍参数）
+- **S4 输出**：`support_value.csv` 分场景辅助榜（三维度 min-max 归一化后按场景权重合成）
+
 ## 使用方法
 
 ```bash
